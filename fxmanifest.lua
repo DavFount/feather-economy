@@ -24,7 +24,8 @@ server_scripts {
     'server/services/outbox.lua',
     'server/services/foundation.lua',
     'server/services/api.lua',
-    'server/main.lua'
+    'server/main.lua',
+    'server/shop_tests.lua'
 }
 
 dependencies {

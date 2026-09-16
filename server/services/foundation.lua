@@ -63,6 +63,7 @@ local function ValidateConfig()
     if type(access) ~= 'table' or type(access.trustedReaders) ~= 'table'
         or type(access.trustedProvisioners) ~= 'table'
         or type(access.trustedTransactors) ~= 'table'
+        or type(access.trustedReversers) ~= 'table'
         or type(access.trustedSuppliers) ~= 'table'
         or access.trustedReaders['feather-economy'] ~= true
         or access.trustedProvisioners['feather-economy'] ~= true

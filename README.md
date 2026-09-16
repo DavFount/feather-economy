@@ -85,6 +85,7 @@ EconomyTransferContractSmokeTest <connected source>
 EconomySupplyTest <connected source> <fresh requestId>
 EconomyJournalAuditSmokeTest
 EconomyTransferLiveTest <sender source> <recipient source> <fresh requestId>
+EconomyConcurrencyTest <sender source> <recipient source> <fresh requestId>
 ```
 
 The account contract is read-only and should pass `7/7`. The wallet test
@@ -97,3 +98,26 @@ wallet finishes at its original balance.
 The journal audit is read-only. The two-character transfer test funds the
 sender, transfers 40.00 dollars with idempotent replay, and destroys the test
 funds from both wallets so both finish at their original balances.
+The concurrency test injects a rollback after balance writes, then races two
+75.00 spends against 100.00. Exactly one may commit; the other must fail for
+insufficient funds before both wallets are restored.
+# Payment reversal prerequisite
+
+Trusted server callers may use `ReversePayment({ transactionId = originalUuid }, context)`.
+Only the caller's own committed `shop.purchase` transfer referencing `shop_order`
+is eligible. The original journal supplies the full amount, currency, and reversed
+accounts (system sink to buyer wallet). No caller-selected amount, destination,
+or request key is accepted. One deterministic reversal key per original payment
+prevents duplicate refunds, including after restart. Original entries are checked
+under lock; the reversal posts through the existing balanced journal and outbox.
+Closed accounts, insufficient sink funds, and wallet limits fail without posting.
+
+This is a trusted server primitive, not a client refund route. Shops must commit
+Inventory's cancellation fence before invoking it; Economy does not infer delivery
+status. Shops' internal compensation coordinator enforces this fence; no automatic
+refund worker or client refund route exists yet.
+Shops remains excluded from currency supply privileges.
+
+Run `EconomyPaymentReversalContractSmokeTest` in the server console. Expect 6/6
+passes with no funds moved. Live reversal/restart tests follow the shop cancellation
+integration; do not reverse an already fulfilled purchase as an acceptance shortcut.

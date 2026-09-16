@@ -371,4 +371,97 @@ if Config.DevMode then
             tostring(fromAfter.ok and fromAfter.value.balance),
             tostring(toAfter.ok and toAfter.value.balance), tostring(passed)))
     end, true)
+
+    RegisterCommand('EconomyConcurrencyTest', function(source, args)
+        if source ~= 0 then return end
+        local senderSource, recipientSource = tonumber(args and args[1]), tonumber(args and args[2])
+        local requestId = args and args[3]
+        local sender = senderSource and exports['feather-core']:GetSessionContext(senderSource) or nil
+        local recipient = recipientSource and exports['feather-core']:GetSessionContext(recipientSource) or nil
+        if type(sender) ~= 'table' or not sender.ok or type(recipient) ~= 'table'
+            or not recipient.ok or sender.value.characterId == recipient.value.characterId
+            or type(requestId) ~= 'string' then
+            print('[EconomyConcurrencyTest] usage: EconomyConcurrencyTest <sender> <recipient> <fresh requestId>')
+            return
+        end
+        local function Dollars(characterId)
+            local wallets = EconomyAccounts.EnsureCharacterWallets(characterId)
+            for _, account in ipairs(wallets.ok and wallets.value or {}) do
+                if account.currency == 'dollars' then return account end
+            end
+        end
+        local from, to = Dollars(sender.value.characterId), Dollars(recipient.value.characterId)
+        if not from or not to then print('[EconomyConcurrencyTest] FAIL wallets unavailable'); return end
+        local fromBefore, toBefore = from.balance, to.balance
+        local context = { resource = 'feather-economy', actorSource = senderSource,
+            actorCharacterId = sender.value.characterId, correlationId = 'concurrency:' .. requestId }
+        local issued = EconomyAPI.Issue({ accountId = from.accountId, currency = 'dollars',
+            amount = 10000, reasonCode = 'smoke.issue', referenceType = 'smoke',
+            referenceId = requestId, idempotencyKey = requestId .. '-issue' },
+            context, 'feather-economy')
+        if not issued.ok then
+            print(('[EconomyConcurrencyTest] FAIL funding code=%s'):format(tostring(issued.code)))
+            return
+        end
+        local injectedContext = { resource = 'feather-economy', actorSource = senderSource,
+            actorCharacterId = sender.value.characterId, correlationId = 'injected:' .. requestId,
+            failureInjection = 'after_balance_update' }
+        local injected = EconomyJournal.Transfer({ fromAccountId = from.accountId,
+            toAccountId = to.accountId, currency = 'dollars', amount = 1,
+            reasonCode = 'smoke.injected', referenceType = 'smoke', referenceId = requestId,
+            idempotencyKey = requestId .. '-injected' }, injectedContext)
+        local afterInjectedFrom, afterInjectedTo = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
+        local injectedReservationCount = tonumber(MySQL.scalar.await([[
+            SELECT COUNT(*) FROM `economy_transactions`
+            WHERE `source_resource`='feather-economy' AND `operation_type`='transfer'
+              AND `idempotency_key`=?
+        ]], { requestId .. '-injected' })) or -1
+        local injectionRolledBack = not injected.ok and injected.code == 'transaction_conflict'
+            and afterInjectedFrom.ok and afterInjectedTo.ok
+            and afterInjectedFrom.value.balance == fromBefore + 10000
+            and afterInjectedTo.value.balance == toBefore and injectedReservationCount == 0
+
+        local outcomes, completed = {}, promise.new()
+        local function Spend(suffix)
+            CreateThread(function()
+                local outcome = EconomyJournal.Transfer({
+                    fromAccountId = from.accountId, toAccountId = to.accountId,
+                    currency = 'dollars', amount = 7500, reasonCode = 'smoke.concurrent',
+                    referenceType = 'smoke', referenceId = requestId,
+                    idempotencyKey = requestId .. '-' .. suffix
+                }, context)
+                outcomes[#outcomes + 1] = outcome
+                if #outcomes == 2 then completed:resolve(true) end
+            end)
+        end
+        Spend('a')
+        Spend('b')
+        Citizen.Await(completed)
+        local successes, insufficient = 0, 0
+        for _, outcome in ipairs(outcomes) do
+            if outcome.ok then successes = successes + 1
+            elseif outcome.code == 'insufficient_funds' then insufficient = insufficient + 1 end
+        end
+        local senderNow, recipientNow = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
+        local conserved = senderNow.ok and recipientNow.ok
+            and senderNow.value.balance == fromBefore + 2500
+            and recipientNow.value.balance == toBefore + 7500
+        local destroyedSender = conserved and EconomyAPI.Destroy({ accountId = from.accountId,
+            currency = 'dollars', amount = 2500, reasonCode = 'smoke.destroy',
+            referenceType = 'smoke', referenceId = requestId,
+            idempotencyKey = requestId .. '-destroy-sender' }, context, 'feather-economy') or nil
+        local destroyedRecipient = destroyedSender and destroyedSender.ok and EconomyAPI.Destroy({
+            accountId = to.accountId, currency = 'dollars', amount = 7500,
+            reasonCode = 'smoke.destroy', referenceType = 'smoke', referenceId = requestId,
+            idempotencyKey = requestId .. '-destroy-recipient' }, context, 'feather-economy') or nil
+        local fromAfter, toAfter = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
+        local restored = destroyedSender and destroyedSender.ok and destroyedRecipient
+            and destroyedRecipient.ok and fromAfter.ok and toAfter.ok
+            and fromAfter.value.balance == fromBefore and toAfter.value.balance == toBefore
+        local passed = injectionRolledBack and successes == 1 and insufficient == 1
+            and conserved and restored
+        print(('[EconomyConcurrencyTest] %s injectedRollback=%s committed=%d insufficient=%d conserved=%s restored=%s'):format(
+            passed and 'PASS' or 'FAIL', tostring(injectionRolledBack), successes,
+            insufficient, tostring(conserved), tostring(restored)))
+    end, true)
 end

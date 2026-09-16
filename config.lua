@@ -8,16 +8,21 @@ Config = {
             ['feather-economy'] = true,
             ['feather-admin'] = true,
             ['feather-hud'] = true,
-            ['bcc-shops'] = true
+            ['feather-shops'] = true
         },
         trustedProvisioners = {
             ['feather-economy'] = true,
             ['feather-character'] = true,
+            ['feather-shops'] = true,
             ['feather-admin'] = true
         },
         trustedTransactors = {
             ['feather-economy'] = true,
-            ['bcc-shops'] = true
+            ['feather-shops'] = true
+        },
+        trustedReversers = {
+            ['feather-economy'] = true,
+            ['feather-shops'] = true
         },
         trustedSuppliers = {
             ['feather-economy'] = true,

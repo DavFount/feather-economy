@@ -51,10 +51,35 @@ function EconomyAPI.EnsureCharacterWallets(request, resource)
     return EconomyAccounts.EnsureCharacterWallets(request.characterId)
 end
 
+function EconomyAPI.GetSystemAccount(request, resource)
+    local allowed = Authorize(resource, 'trustedReaders')
+    if not allowed.ok then return allowed end
+    if type(request) ~= 'table' or type(request.currency) ~= 'string'
+        or (request.accountType ~= 'system_source' and request.accountType ~= 'system_sink') then
+        return EconomyResults.Err('invalid_input', 'Currency and system account type required.')
+    end
+    local accounts = EconomyAccounts.FindByOwner('system', Config.SystemOwnerId)
+    if not accounts.ok then return accounts end
+    for _, account in ipairs(accounts.value) do
+        if account.currency == request.currency and account.accountType == request.accountType then
+            return EconomyResults.Ok(account)
+        end
+    end
+    return EconomyResults.Err('account_not_found', 'System account was not found.')
+end
+
 function EconomyAPI.Transfer(request, context, resource)
     context = type(context) == 'table' and context or {}
     context.resource = resource
     return EconomyJournal.Transfer(request, context)
+end
+
+function EconomyAPI.ReversePayment(request, context, resource)
+    local allowed = Authorize(resource, 'trustedReversers')
+    if not allowed.ok then return allowed end
+    context = type(context) == 'table' and context or {}
+    context.resource = resource
+    return EconomyJournal.ReversePayment(request, context)
 end
 
 local function Supply(operation, request, context, resource)
@@ -101,8 +126,14 @@ end)
 exports('EnsureCharacterWallets', function(request)
     return EconomyAPI.EnsureCharacterWallets(request, GetInvokingResource())
 end)
+exports('GetSystemAccount', function(request)
+    return EconomyAPI.GetSystemAccount(request, GetInvokingResource())
+end)
 exports('Transfer', function(request, context)
     return EconomyAPI.Transfer(request, context, GetInvokingResource())
+end)
+exports('ReversePayment', function(request, context)
+    return EconomyAPI.ReversePayment(request, context, GetInvokingResource())
 end)
 exports('Issue', function(request, context)
     return EconomyAPI.Issue(request, context, GetInvokingResource())

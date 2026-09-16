@@ -28,7 +28,8 @@ local function Post(operation, request, context)
     request, context = type(request) == 'table' and request or {},
         type(context) == 'table' and context or {}
     local resource = context.resource
-    local trusted = operation == 'transfer' and Config.Access.trustedTransactors
+    local trusted = operation == 'reversal' and Config.Access.trustedReversers
+        or operation == 'transfer' and Config.Access.trustedTransactors
         or Config.Access.trustedSuppliers
     if type(resource) ~= 'string' or not trusted[resource] then
         return Failure('authorization_denied',
@@ -58,6 +59,27 @@ local function Post(operation, request, context)
     local bodyResult, bodyError
     local called, committed = pcall(MySQL.startTransaction, function(query)
         local ok, result = pcall(function()
+            if operation == 'reversal' then
+                local originals = query([[SELECT * FROM `economy_transactions`
+                    WHERE `transaction_id`=? FOR UPDATE]], { referenceId }) or {}
+                local original = originals[1]
+                if not original or original.source_resource ~= resource
+                    or original.operation_type ~= 'transfer' or original.status ~= 'committed'
+                    or original.reason_code ~= 'shop.purchase' or original.reference_type ~= 'shop_order' then
+                    return Failure('reversal_not_allowed', 'Only this caller\'s committed shop payment can be reversed.')
+                end
+                local entries = query([[SELECT `account_id`,`amount` FROM `economy_entries`
+                    WHERE `transaction_id`=?]], { referenceId }) or {}
+                local valid = #entries == 2
+                local debit, credit = false, false
+                for _, entry in ipairs(entries) do
+                    debit = debit or (entry.account_id == request.toAccountId and tonumber(entry.amount) == -amount)
+                    credit = credit or (entry.account_id == request.fromAccountId and tonumber(entry.amount) == amount)
+                end
+                if not valid or not debit or not credit or original.currency_code ~= request.currency then
+                    return Failure('internal_error', 'Original payment entries do not match the reversal.')
+                end
+            end
             query([[
                 INSERT IGNORE INTO `economy_transactions`
                     (`transaction_id`,`operation_type`,`status`,`currency_code`,`reason_code`,
@@ -112,6 +134,8 @@ local function Post(operation, request, context)
                     and to.account_type == 'wallet'
                 or operation == 'destroy' and from.account_type == 'wallet'
                     and to.account_type == 'system_sink'
+                or operation == 'reversal' and from.account_type == 'system_sink'
+                    and to.account_type == 'wallet'
             if not typesAllowed then
                 return Failure('authorization_denied', 'These account types cannot use a normal transfer.')
             end
@@ -133,6 +157,11 @@ local function Post(operation, request, context)
                 { nextFrom, request.fromAccountId })
             query('UPDATE `economy_balances` SET `posted_amount`=?,`revision`=`revision`+1 WHERE `account_id`=?',
                 { nextTo, request.toAccountId })
+            if Config.DevMode and resource == 'feather-economy'
+                and context.failureInjection == 'after_balance_update' then
+                return Failure('transaction_conflict',
+                    'Injected failure after balance update.')
+            end
             query([[
                 INSERT INTO `economy_entries`
                     (`entry_id`,`transaction_id`,`account_id`,`amount`,`resulting_balance`)
@@ -178,6 +207,39 @@ end
 
 function EconomyJournal.Transfer(request, context)
     return Post('transfer', request, context)
+end
+
+function EconomyJournal.ReversePayment(request, context)
+    if type(context) ~= 'table' or not Config.Access.trustedReversers
+        or Config.Access.trustedReversers[context.resource or ''] ~= true then
+        return Failure('authorization_denied', 'Payment reversal caller is not trusted.')
+    end
+    if type(request) ~= 'table' or not IsUuid(request.transactionId) then
+        return Failure('invalid_input', 'Original payment transaction UUID required.')
+    end
+    for key in pairs(request) do
+        if key ~= 'transactionId' then return Failure('invalid_input', 'Unexpected reversal field.') end
+    end
+    local original = MySQL.single.await([[SELECT * FROM `economy_transactions`
+        WHERE `transaction_id`=?]], { request.transactionId })
+    if not original or original.source_resource ~= context.resource
+        or original.operation_type ~= 'transfer' or original.status ~= 'committed'
+        or original.reason_code ~= 'shop.purchase' or original.reference_type ~= 'shop_order' then
+        return Failure('reversal_not_allowed', 'Only this caller\'s committed shop payment can be reversed.')
+    end
+    local decoded, value = pcall(json.decode, original.result_json or '')
+    if not decoded or type(value) ~= 'table' then
+        return Failure('internal_error', 'Original payment receipt is invalid.')
+    end
+    -- The original UUID supplies the only reversal key. Callers cannot obtain
+    -- multiple refunds by choosing new request IDs or arbitrary amounts/accounts.
+    return Post('reversal', {
+        fromAccountId = value.toAccountId, toAccountId = value.fromAccountId,
+        amount = value.amount, currency = value.currency,
+        reasonCode = 'shop.payment_reversal', referenceType = 'economy_transaction',
+        referenceId = original.transaction_id,
+        idempotencyKey = 'reversal:' .. original.transaction_id
+    }, context)
 end
 
 local function Supply(operation, request, context)
