@@ -16,9 +16,12 @@ server_scripts {
     'server/logging.lua',
     'server/migrations/001_economy_foundation.lua',
     'server/migrations/002_economy_accounts.lua',
+    'server/migrations/003_economy_journal.lua',
     'server/persistence/migrations.lua',
     'server/repositories/currencies.lua',
     'server/repositories/accounts.lua',
+    'server/services/journal.lua',
+    'server/services/outbox.lua',
     'server/services/foundation.lua',
     'server/services/api.lua',
     'server/main.lua'

@@ -14,7 +14,25 @@ Config = {
             ['feather-economy'] = true,
             ['feather-character'] = true,
             ['feather-admin'] = true
+        },
+        trustedTransactors = {
+            ['feather-economy'] = true,
+            ['bcc-shops'] = true
+        },
+        trustedSuppliers = {
+            ['feather-economy'] = true,
+            ['feather-admin'] = true
         }
+    },
+    Authorization = {
+        enabled = false,
+        issueAction = 'economy.currency.issue',
+        destroyAction = 'economy.currency.destroy'
+    },
+    Outbox = {
+        pollIntervalMs = 1000,
+        retryDelaySeconds = 5,
+        batchSize = 25
     },
     Currencies = {
         dollars = {
@@ -33,6 +51,8 @@ Config = {
         maximumPageSize = 100,
         maximumReasonLength = 64,
         maximumReferenceLength = 128,
-        maximumIdempotencyKeyLength = 128
+        maximumIdempotencyKeyLength = 128,
+        maximumTransferAmount = 1000000000000,
+        maximumBalance = 9000000000000000
     }
 }

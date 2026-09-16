@@ -12,8 +12,9 @@ The current `0.1.0` foundation provides:
 - atomic character and system account provisioning; and
 - zero-balance account records with trusted server-only reads.
 
-Transfers, balance mutation, the balanced journal, idempotency, and the
-transactional outbox remain unavailable until their implementation phases land.
+Atomic wallet transfers, balanced journal entries, payload-bound idempotency,
+transactional outbox records, and policy-gated currency issuance/destruction
+are available.
 
 ## Dependencies
 
@@ -41,6 +42,17 @@ local dollars = exports['feather-economy']:GetCurrency('dollars')
 local wallets = exports['feather-economy']:EnsureCharacterWallets({
     characterId = characterId
 })
+
+local paid = exports['feather-economy']:Transfer({
+    fromAccountId = buyerWalletId,
+    toAccountId = recipientWalletId,
+    currency = 'dollars',
+    amount = 2500,
+    reasonCode = 'shop.purchase',
+    referenceType = 'order',
+    referenceId = orderId,
+    idempotencyKey = requestId
+}, context)
 ```
 
 Account exports are server-only and restricted by `Config.Access`. Consumers
@@ -69,8 +81,14 @@ After the foundation passes:
 ```text
 EconomyAccountContractSmokeTest
 EconomyWalletProvisionTest <connected source>
+EconomyTransferContractSmokeTest <connected source>
+EconomySupplyTest <connected source> <fresh requestId>
 ```
 
 The account contract is read-only and should pass `7/7`. The wallet test
 creates the active character's two zero-balance wallets and verifies that a
 retry returns the same account IDs.
+The transfer contract test moves no funds and should pass `7/7`.
+The supply test issues 100.00 dollars, replays the request, rejects mismatched
+payload reuse, verifies balanced entries, and destroys the test amount so the
+wallet finishes at its original balance.

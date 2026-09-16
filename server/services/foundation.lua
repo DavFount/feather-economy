@@ -50,15 +50,39 @@ local function ValidateConfig()
         or limits.maximumReferenceLength < 1 or limits.maximumReferenceLength > 256
         or type(limits.maximumIdempotencyKeyLength) ~= 'number'
         or limits.maximumIdempotencyKeyLength < 16
-        or limits.maximumIdempotencyKeyLength > 256 then
+        or limits.maximumIdempotencyKeyLength > 256
+        or type(limits.maximumTransferAmount) ~= 'number'
+        or limits.maximumTransferAmount < 1
+        or limits.maximumTransferAmount > 9000000000000000
+        or type(limits.maximumBalance) ~= 'number'
+        or limits.maximumBalance < limits.maximumTransferAmount
+        or limits.maximumBalance > 9000000000000000 then
         return EconomyResults.Err('invalid_config', 'Config.Limits is invalid.')
     end
     local access = Config.Access
     if type(access) ~= 'table' or type(access.trustedReaders) ~= 'table'
         or type(access.trustedProvisioners) ~= 'table'
+        or type(access.trustedTransactors) ~= 'table'
+        or type(access.trustedSuppliers) ~= 'table'
         or access.trustedReaders['feather-economy'] ~= true
-        or access.trustedProvisioners['feather-economy'] ~= true then
+        or access.trustedProvisioners['feather-economy'] ~= true
+        or access.trustedTransactors['feather-economy'] ~= true
+        or access.trustedSuppliers['feather-economy'] ~= true then
         return EconomyResults.Err('invalid_config', 'Config.Access is invalid.')
+    end
+    local authorization = Config.Authorization
+    if type(authorization) ~= 'table' or type(authorization.enabled) ~= 'boolean'
+        or type(authorization.issueAction) ~= 'string' or authorization.issueAction == ''
+        or type(authorization.destroyAction) ~= 'string' or authorization.destroyAction == '' then
+        return EconomyResults.Err('invalid_config', 'Config.Authorization is invalid.')
+    end
+    local outbox = Config.Outbox
+    if type(outbox) ~= 'table' or type(outbox.pollIntervalMs) ~= 'number'
+        or outbox.pollIntervalMs < 250 or outbox.pollIntervalMs > 60000
+        or type(outbox.retryDelaySeconds) ~= 'number' or outbox.retryDelaySeconds < 1
+        or type(outbox.batchSize) ~= 'number' or outbox.batchSize < 1
+        or outbox.batchSize > 100 then
+        return EconomyResults.Err('invalid_config', 'Config.Outbox is invalid.')
     end
     health.checks.configuration = { ok = true, checkedAt = os.time() }
     return EconomyResults.Ok(true)
@@ -96,6 +120,16 @@ function EconomyFoundation.BeginStartup()
             'Economy could not declare its readiness event.', {
                 dependency = 'feather-core',
                 code = type(declared) == 'table' and declared.code or 'invalid_result'
+            })
+    end
+    local posted = exports['feather-core']:DeclareEvent('economy.transaction.posted.v1', {
+        contract = 1, maxPayloadBytes = 8192, maxDepth = 6, maxNodes = 96
+    })
+    if type(posted) ~= 'table' or posted.ok ~= true then
+        return EconomyFoundation.MarkFailed('dependency_unavailable',
+            'Economy could not declare its transaction event.', {
+                dependency = 'feather-core',
+                code = type(posted) == 'table' and posted.code or 'invalid_result'
             })
     end
     health.checks.events = { ok = true, checkedAt = os.time() }
@@ -143,10 +177,12 @@ function EconomyFoundation.GetCapabilities()
             results = 1,
             currencyCatalog = 1,
             accounts = 1,
-            transfers = 0,
-            journal = 0,
-            idempotency = 0,
-            outbox = 0
+            transfers = 1,
+            journal = 1,
+            idempotency = 1,
+            outbox = 1,
+            outboxDelivery = 1,
+            supplyOperations = 1
         }
     })
 end
