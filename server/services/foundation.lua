@@ -81,7 +81,7 @@ local function ValidateConfig()
         or outbox.pollIntervalMs < 250 or outbox.pollIntervalMs > 60000
         or type(outbox.retryDelaySeconds) ~= 'number' or outbox.retryDelaySeconds < 1
         or type(outbox.batchSize) ~= 'number' or outbox.batchSize < 1
-        or outbox.batchSize > 100 then
+        or outbox.batchSize > 100 or outbox.batchSize ~= math.floor(outbox.batchSize) then
         return EconomyResults.Err('invalid_config', 'Config.Outbox is invalid.')
     end
     health.checks.configuration = { ok = true, checkedAt = os.time() }

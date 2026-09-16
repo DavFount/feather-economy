@@ -144,6 +144,45 @@ RegisterCommand('EconomyAccountContractSmokeTest', function(source)
         :format(passed, #tests))
 end, true)
 
+RegisterCommand('EconomyJournalAuditSmokeTest', function(source)
+    if source ~= 0 then return end
+    local state = EconomyOutbox.GetState()
+    local unbalanced = tonumber(MySQL.scalar.await([[
+        SELECT COUNT(*) FROM (
+            SELECT `transaction_id` FROM `economy_entries`
+            GROUP BY `transaction_id` HAVING SUM(`amount`) <> 0
+        ) audit
+    ]])) or -1
+    local orphaned = tonumber(MySQL.scalar.await([[
+        SELECT COUNT(*) FROM (
+            SELECT t.`transaction_id` FROM `economy_transactions` t
+            LEFT JOIN `economy_entries` e ON e.`transaction_id`=t.`transaction_id`
+            WHERE t.`status`='committed' GROUP BY t.`transaction_id`
+            HAVING COUNT(e.`entry_id`) < 2
+        ) audit
+    ]])) or 0
+    local invalidOutbox = tonumber(MySQL.scalar.await([[
+        SELECT COUNT(*) FROM `economy_outbox`
+        WHERE `status` NOT IN ('pending','published')
+    ]])) or -1
+    local tests = {
+        { 'outbox running', state.ok and state.value.running == true },
+        { 'journal balanced', unbalanced == 0 },
+        { 'entries complete', orphaned == 0 },
+        { 'outbox states valid', invalidOutbox == 0 },
+        { 'delivery capability', EconomyFoundation.GetCapabilities().value.features.outboxDelivery == 1 }
+    }
+    local passed = 0
+    for _, test in ipairs(tests) do
+        if test[2] then passed = passed + 1 end
+        print(('[EconomyJournalAuditSmokeTest] %-22s %s')
+            :format(test[1], test[2] and 'PASS' or 'FAIL'))
+    end
+    print(('[EconomyJournalAuditSmokeTest] done %d/%d passed pending=%s published=%s (read-only)')
+        :format(passed, #tests, tostring(state.ok and state.value.pending),
+            tostring(state.ok and state.value.published)))
+end, true)
+
 if Config.DevMode then
     RegisterCommand('EconomyWalletProvisionTest', function(source, args)
         if source ~= 0 then return end
@@ -251,17 +290,17 @@ if Config.DevMode then
             idempotencyKey = requestId }
         local context = { resource = 'feather-economy', actorSource = target,
             actorCharacterId = session.value.characterId, correlationId = 'supply:' .. requestId }
-        local issued = EconomyJournal.Issue(request, context)
-        local replayed = EconomyJournal.Issue(request, context)
+        local issued = EconomyAPI.Issue(request, context, 'feather-economy')
+        local replayed = EconomyAPI.Issue(request, context, 'feather-economy')
         local mismatchRequest = {}
         for key, value in pairs(request) do mismatchRequest[key] = value end
         mismatchRequest.amount = request.amount + 1
-        local mismatch = EconomyJournal.Issue(mismatchRequest, context)
-        local destroyed = issued.ok and EconomyJournal.Destroy({
+        local mismatch = EconomyAPI.Issue(mismatchRequest, context, 'feather-economy')
+        local destroyed = issued.ok and EconomyAPI.Destroy({
             accountId = wallet.accountId, currency = 'dollars', amount = request.amount,
             reasonCode = 'smoke.destroy', referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId .. '-destroy'
-        }, context) or issued
+        }, context, 'feather-economy') or issued
         local after = EconomyAccounts.Get(wallet.accountId)
         local entrySum = issued.ok and tonumber(MySQL.scalar.await([[
             SELECT COALESCE(SUM(`amount`),0) FROM `economy_entries`
@@ -277,5 +316,59 @@ if Config.DevMode then
             tostring(replayed.ok and replayed.value.replayed),
             tostring(not mismatch.ok and mismatch.code == 'idempotency_conflict'),
             tostring(entrySum == 0)))
+    end, true)
+
+    RegisterCommand('EconomyTransferLiveTest', function(source, args)
+        if source ~= 0 then return end
+        local senderSource, recipientSource = tonumber(args and args[1]), tonumber(args and args[2])
+        local requestId = args and args[3]
+        local sender = senderSource and exports['feather-core']:GetSessionContext(senderSource) or nil
+        local recipient = recipientSource and exports['feather-core']:GetSessionContext(recipientSource) or nil
+        if type(sender) ~= 'table' or not sender.ok or type(recipient) ~= 'table'
+            or not recipient.ok or sender.value.characterId == recipient.value.characterId
+            or type(requestId) ~= 'string' then
+            print('[EconomyTransferLiveTest] usage: EconomyTransferLiveTest <sender> <recipient> <fresh requestId>')
+            return
+        end
+        local function Dollars(characterId)
+            local wallets = EconomyAccounts.EnsureCharacterWallets(characterId)
+            for _, account in ipairs(wallets.ok and wallets.value or {}) do
+                if account.currency == 'dollars' then return account end
+            end
+        end
+        local from, to = Dollars(sender.value.characterId), Dollars(recipient.value.characterId)
+        if not from or not to then print('[EconomyTransferLiveTest] FAIL wallets unavailable'); return end
+        local fromBefore, toBefore = from.balance, to.balance
+        local context = { resource = 'feather-economy', actorSource = senderSource,
+            actorCharacterId = sender.value.characterId, correlationId = 'transfer-live:' .. requestId }
+        local issued = EconomyAPI.Issue({ accountId = from.accountId, currency = 'dollars',
+            amount = 10000, reasonCode = 'smoke.issue', referenceType = 'smoke',
+            referenceId = requestId, idempotencyKey = requestId .. '-issue' },
+            context, 'feather-economy')
+        local transferRequest = { fromAccountId = from.accountId, toAccountId = to.accountId,
+            currency = 'dollars', amount = 4000, reasonCode = 'smoke.transfer',
+            referenceType = 'smoke', referenceId = requestId, idempotencyKey = requestId }
+        local transferred = issued.ok and EconomyJournal.Transfer(transferRequest, context) or issued
+        local replayed = transferred.ok and EconomyJournal.Transfer(transferRequest, context) or transferred
+        local destroyedFrom = transferred.ok and EconomyAPI.Destroy({ accountId = from.accountId,
+            currency = 'dollars', amount = 6000, reasonCode = 'smoke.destroy',
+            referenceType = 'smoke', referenceId = requestId,
+            idempotencyKey = requestId .. '-destroy-sender' },
+            context, 'feather-economy') or transferred
+        local destroyedTo = destroyedFrom.ok and EconomyAPI.Destroy({ accountId = to.accountId,
+            currency = 'dollars', amount = 4000, reasonCode = 'smoke.destroy',
+            referenceType = 'smoke', referenceId = requestId,
+            idempotencyKey = requestId .. '-destroy-recipient' },
+            context, 'feather-economy') or destroyedFrom
+        local fromAfter, toAfter = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
+        local passed = issued.ok and transferred.ok and replayed.ok and replayed.value.replayed == true
+            and replayed.value.transactionId == transferred.value.transactionId
+            and destroyedFrom.ok and destroyedTo.ok and fromAfter.ok and toAfter.ok
+            and fromAfter.value.balance == fromBefore and toAfter.value.balance == toBefore
+        print(('[EconomyTransferLiveTest] %s transaction=%s amount=4000 replayed=%s senderFinal=%s recipientFinal=%s restored=%s'):format(
+            passed and 'PASS' or 'FAIL', tostring(transferred.ok and transferred.value.transactionId),
+            tostring(replayed.ok and replayed.value.replayed),
+            tostring(fromAfter.ok and fromAfter.value.balance),
+            tostring(toAfter.ok and toAfter.value.balance), tostring(passed)))
     end, true)
 end

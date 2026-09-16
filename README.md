@@ -83,6 +83,8 @@ EconomyAccountContractSmokeTest
 EconomyWalletProvisionTest <connected source>
 EconomyTransferContractSmokeTest <connected source>
 EconomySupplyTest <connected source> <fresh requestId>
+EconomyJournalAuditSmokeTest
+EconomyTransferLiveTest <sender source> <recipient source> <fresh requestId>
 ```
 
 The account contract is read-only and should pass `7/7`. The wallet test
@@ -92,3 +94,6 @@ The transfer contract test moves no funds and should pass `7/7`.
 The supply test issues 100.00 dollars, replays the request, rejects mismatched
 payload reuse, verifies balanced entries, and destroys the test amount so the
 wallet finishes at its original balance.
+The journal audit is read-only. The two-character transfer test funds the
+sender, transfers 40.00 dollars with idempotent replay, and destroys the test
+funds from both wallets so both finish at their original balances.
