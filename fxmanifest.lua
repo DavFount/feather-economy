@@ -6,7 +6,7 @@ lua54 'yes'
 description 'Authoritative monetary accounting service for the Feather Framework'
 author 'Feather Framework'
 name 'feather-economy'
-version '0.1.1'
+version '0.1.2'
 
 shared_script 'shared/results.lua'
 

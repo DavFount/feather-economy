@@ -103,6 +103,14 @@ The concurrency test injects a rollback after balance writes, then races two
 insufficient funds before both wallets are restored.
 # Payment reversal prerequisite
 
+The dev-only server-console funding command also accepts optional currency and
+amount: `EconomyShopFundingTest <source> <stable requestId> [dollars|gold]
+[minor units 1-10000]`. Defaults remain dollars/200. The existing durable key binds
+the wallet, currency, and amount: exact retries replay and changed payloads conflict.
+For HUD precision acceptance, use a fresh ID and gold/1, confirm 0.01 on the HUD,
+repeat the exact command with no increase, then restart HUD and confirm persistence.
+This creates real development funds and does not automatically remove them.
+
 Trusted server callers may use `ReversePayment({ transactionId = originalUuid }, context)`.
 Only the caller's own committed `shop.purchase` transfer referencing `shop_order`
 is eligible. The original journal supplies the full amount, currency, and reversed
