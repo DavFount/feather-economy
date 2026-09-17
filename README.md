@@ -118,6 +118,6 @@ status. Shops' internal compensation coordinator enforces this fence; no automat
 refund worker or client refund route exists yet.
 Shops remains excluded from currency supply privileges.
 
-Run `EconomyPaymentReversalContractSmokeTest` in the server console. Expect 6/6
+Run `EconomyPaymentReversalContractSmokeTest` in the server console. Expect 7/7
 passes with no funds moved. Live reversal/restart tests follow the shop cancellation
 integration; do not reverse an already fulfilled purchase as an acceptance shortcut.

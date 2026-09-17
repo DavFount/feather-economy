@@ -5,8 +5,8 @@ local function Text(value, maximum)
 end
 
 local function IsUuid(value)
-    return type(value) == 'string' and #value == 36 and value:match(
-        '^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$') ~= nil
+    return type(value) == 'string' and value:match(
+        '^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$') ~= nil
 end
 
 local function RequestId(value)

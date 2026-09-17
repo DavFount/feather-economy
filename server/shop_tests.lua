@@ -37,10 +37,12 @@ RegisterCommand('EconomyPaymentReversalContractSmokeTest', function(source)
     local incomplete = EconomyAPI.ReversePayment({}, {}, 'feather-shops')
     local tampered = EconomyAPI.ReversePayment({ transactionId = uuid, amount = 1 }, {}, 'feather-shops')
     local missing = EconomyAPI.ReversePayment({ transactionId = uuid }, {}, 'feather-shops')
+    local malformed = EconomyAPI.ReversePayment({ transactionId = '0000000-00000-4000-8000-000000000001' }, {}, 'feather-shops')
     local tests = {
         { 'trusted caller configured', Config.Access.trustedReversers['feather-shops'] == true },
         { 'untrusted caller rejected', not untrusted.ok and untrusted.code == 'authorization_denied' },
         { 'incomplete request rejected', not incomplete.ok and incomplete.code == 'invalid_input' },
+        { 'malformed UUID rejected', not malformed.ok and malformed.code == 'invalid_input' },
         { 'amount tampering rejected', not tampered.ok and tampered.code == 'invalid_input' },
         { 'missing payment rejected', not missing.ok and missing.code == 'reversal_not_allowed' },
         { 'shops supply access absent', Config.Access.trustedSuppliers['feather-shops'] ~= true }
