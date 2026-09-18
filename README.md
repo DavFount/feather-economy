@@ -2,14 +2,14 @@
 
 Authoritative monetary accounting for the Feather Framework.
 
-The current `0.1.0` foundation provides:
+The resource provides:
 
 - Feather Contract 1 results, health, capabilities, and readiness;
 - checksummed, idempotent database migrations;
 - validated `dollars` and `gold` currency definitions;
 - immutable persisted currency precision; and
 - read-only currency catalog exports;
-- atomic character and system account provisioning; and
+- atomic character, system, and organization treasury account provisioning; and
 - zero-balance account records with trusted server-only reads.
 
 Atomic wallet transfers, balanced journal entries, payload-bound idempotency,
@@ -129,3 +129,37 @@ Shops remains excluded from currency supply privileges.
 Run `EconomyPaymentReversalContractSmokeTest` in the server console. Expect 7/7
 passes with no funds moved. Live reversal/restart tests follow the shop cancellation
 integration; do not reverse an already fulfilled purchase as an acceptance shortcut.
+# Organization treasury foundation
+
+`EnsureOrganizationTreasuries({ organizationId = UUID })` is a server-only,
+allowlisted provisioning export. It resolves an active canonical identity through
+feather-organizations and idempotently provisions one organization-owned treasury
+per catalog currency. It cannot seed funds or accept caller-selected account types.
+Provisioning authority does not grant player access or ownership-based spending rights.
+Organizations is resolved at call time, not an Economy startup dependency.
+
+Migration 004 extends account owner/type constraints without changing previously
+applied migration checksums. Existing wallets, journal entries, and system accounts
+are retained. Wallet-to-treasury settlement is restricted to `shop.purchase`
+transfers with a UUID `shop_order` reference. Normal treasury withdrawals, direct
+supply issuance to treasuries, and treasury destruction are not enabled.
+`ReversePayment` derives an exact refund from the caller's original committed
+payment and verifies its journal entries under lock; it supports treasury and
+historical system-sink destinations without accepting caller-selected amounts.
+
+With DevMode enabled, run `EconomyTreasuryContractSmokeTest` (read-only), then
+`EconomyTreasuryProvisionTest <active organization UUID>` twice, including after
+an Economy restart. Provisioning creates zero-funded accounts, never journal funds.
+Identity lookup and local provisioning are not a cross-resource lifecycle lock;
+suspension racing a successful lookup may leave a harmless zero-funded treasury.
+
+`EconomyTreasurySettlementContractSmokeTest` checks the isolated account-type
+gate without moving funds. End-to-end treasury credit, replay, refund, and restart
+recovery are verified using Shops live tests. Provisioning identity does not confer
+spending authority; these are trusted server-service operations, not player routes.
+
+Recorded development acceptance: provisioning contract 6/6, two stable treasuries
+across server restart, settlement type gate 8/8, live treasury purchase credit=200
+exactly once, and undelivered refund restoring 200 with delivery blocked. Latest
+journal audit passed 5/5, pending=0, published=60. Treasury purchase/refund recovery
+across server restart is still pending; no production-readiness claim is implied.

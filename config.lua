@@ -4,6 +4,11 @@ Config = {
     DevMode = true,
     SystemOwnerId = '00000000-0000-0000-0000-000000000001',
     Access = {
+        trustedTreasuryProvisioners = {
+            ['feather-economy'] = true,
+            ['feather-shops'] = true,
+            ['feather-admin'] = true
+        },
         trustedReaders = {
             ['feather-economy'] = true,
             ['feather-admin'] = true,

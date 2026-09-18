@@ -61,6 +61,7 @@ local function ValidateConfig()
     end
     local access = Config.Access
     if type(access) ~= 'table' or type(access.trustedReaders) ~= 'table'
+        or type(access.trustedTreasuryProvisioners) ~= 'table'
         or type(access.trustedProvisioners) ~= 'table'
         or type(access.trustedTransactors) ~= 'table'
         or type(access.trustedReversers) ~= 'table'
@@ -178,6 +179,8 @@ function EconomyFoundation.GetCapabilities()
             results = 1,
             currencyCatalog = 1,
             accounts = 1,
+            organizationTreasuries = 1,
+            treasurySettlement = 1,
             transfers = 1,
             journal = 1,
             idempotency = 1,

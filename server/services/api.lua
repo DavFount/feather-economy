@@ -68,6 +68,41 @@ function EconomyAPI.GetSystemAccount(request, resource)
     return EconomyResults.Err('account_not_found', 'System account was not found.')
 end
 
+function EconomyAPI.EnsureOrganizationTreasuries(request, resource)
+    local allowed = Authorize(resource, 'trustedTreasuryProvisioners')
+    if not allowed.ok then return allowed end
+    if EconomyFoundation.GetHealth().state ~= 'ready' then
+        return EconomyResults.Err('not_ready', 'Economy is not ready.')
+    end
+    if type(request) ~= 'table' then
+        return EconomyResults.Err('invalid_input', 'Organization UUID required.')
+    end
+    for key in pairs(request) do
+        if key ~= 'organizationId' then
+            return EconomyResults.Err('invalid_input', 'Unexpected treasury provisioning field.')
+        end
+    end
+    local id = request.organizationId
+    if type(id) ~= 'string' or not id:match(
+        '^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$') then
+        return EconomyResults.Err('invalid_input', 'Organization UUID required.')
+    end
+    -- Resolve through the owning service, never through its database tables.
+    -- No hard startup dependency: Organizations may start after Economy.
+    id = id:lower()
+    local called, organization = pcall(function()
+        return exports['feather-organizations']:GetOrganization({ organizationId = id })
+    end)
+    if not called or type(organization) ~= 'table' or organization.ok ~= true
+        or type(organization.value) ~= 'table' or organization.value.organizationId ~= id then
+        return EconomyResults.Err('dependency_unavailable', 'Organization identity could not be verified.')
+    end
+    if organization.value.status ~= 'active' then
+        return EconomyResults.Err('organization_inactive', 'Active organization required for treasury provisioning.')
+    end
+    return EconomyAccounts.EnsureOrganizationTreasuries(id)
+end
+
 function EconomyAPI.Transfer(request, context, resource)
     context = type(context) == 'table' and context or {}
     context.resource = resource
@@ -125,6 +160,9 @@ exports('FindAccountsByOwner', function(request)
 end)
 exports('EnsureCharacterWallets', function(request)
     return EconomyAPI.EnsureCharacterWallets(request, GetInvokingResource())
+end)
+exports('EnsureOrganizationTreasuries', function(request)
+    return EconomyAPI.EnsureOrganizationTreasuries(request, GetInvokingResource())
 end)
 exports('GetSystemAccount', function(request)
     return EconomyAPI.GetSystemAccount(request, GetInvokingResource())

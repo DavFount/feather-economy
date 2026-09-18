@@ -24,6 +24,19 @@ local function Failure(code, message, details)
     return EconomyResults.Err(code, message, details)
 end
 
+function EconomyJournal.AccountTypesAllowed(operation, from, to, request)
+    return operation == 'transfer' and from.account_type == 'wallet'
+        and (to.account_type == 'wallet' or to.account_type == 'system_sink'
+            or (to.account_type == 'treasury' and to.owner_type == 'organization'
+                and request.reasonCode == 'shop.purchase' and request.referenceType == 'shop_order'
+                and IsUuid(request.referenceId)))
+        or operation == 'issue' and from.account_type == 'system_source' and to.account_type == 'wallet'
+        or operation == 'destroy' and from.account_type == 'wallet' and to.account_type == 'system_sink'
+        or operation == 'reversal' and (from.account_type == 'system_sink'
+            or (from.account_type == 'treasury' and from.owner_type == 'organization'))
+            and to.account_type == 'wallet'
+end
+
 local function Post(operation, request, context)
     request, context = type(request) == 'table' and request or {},
         type(context) == 'table' and context or {}
@@ -128,14 +141,7 @@ local function Post(operation, request, context)
             if from.currency_code ~= request.currency or to.currency_code ~= request.currency then
                 return Failure('currency_mismatch', 'Transfer accounts do not use the requested currency.')
             end
-            local typesAllowed = operation == 'transfer' and from.account_type == 'wallet'
-                and (to.account_type == 'wallet' or to.account_type == 'system_sink')
-                or operation == 'issue' and from.account_type == 'system_source'
-                    and to.account_type == 'wallet'
-                or operation == 'destroy' and from.account_type == 'wallet'
-                    and to.account_type == 'system_sink'
-                or operation == 'reversal' and from.account_type == 'system_sink'
-                    and to.account_type == 'wallet'
+            local typesAllowed = EconomyJournal.AccountTypesAllowed(operation, from, to, request)
             if not typesAllowed then
                 return Failure('authorization_denied', 'These account types cannot use a normal transfer.')
             end

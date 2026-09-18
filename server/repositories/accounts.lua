@@ -53,7 +53,7 @@ local function RunTransaction(body)
 end
 
 local function Ensure(ownerType, ownerId, accountTypes)
-    if (ownerType ~= 'character' and ownerType ~= 'system') or not IsUuid(ownerId) then
+    if (ownerType ~= 'character' and ownerType ~= 'system' and ownerType ~= 'organization') or not IsUuid(ownerId) then
         return EconomyResults.Err('invalid_input', 'A valid account owner is required.')
     end
     local currencies = EconomyCurrencies.List()
@@ -125,6 +125,10 @@ function EconomyAccounts.EnsureCharacterWallets(characterId)
     return Ensure('character', characterId, { 'wallet' })
 end
 
+function EconomyAccounts.EnsureOrganizationTreasuries(organizationId)
+    return Ensure('organization', organizationId, { 'treasury' })
+end
+
 function EconomyAccounts.Get(accountId)
     if not IsUuid(accountId) then
         return EconomyResults.Err('invalid_input', 'accountId must be a UUID.')
@@ -144,7 +148,7 @@ function EconomyAccounts.Get(accountId)
 end
 
 function EconomyAccounts.FindByOwner(ownerType, ownerId)
-    if (ownerType ~= 'character' and ownerType ~= 'system') or not IsUuid(ownerId) then
+    if (ownerType ~= 'character' and ownerType ~= 'system' and ownerType ~= 'organization') or not IsUuid(ownerId) then
         return EconomyResults.Err('invalid_input', 'A valid account owner is required.')
     end
     local rows = MySQL.query.await([[
