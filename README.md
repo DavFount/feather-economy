@@ -2,6 +2,21 @@
 
 Authoritative monetary accounting for the Feather Framework.
 
+Shipped defaults use `Config.DevMode=false` and policy-gate currency issuance and
+destruction with `Config.Authorization.enabled=true`. Development funding,
+concurrency, live transfer, provisioning, and contract-test commands are therefore
+not registered. Read-only health/capability exports, foundation/account/journal
+audits, and `EconomyReleaseContractSmokeTest` remain available to the server
+console. Enable DevMode only on an isolated development server, then disable it
+and restart before packaging. Production supply also requires an explicit Core
+policy decision; merely being a trusted server resource is insufficient.
+
+Production-surface acceptance passed 7/7 on 2026-09-18: Economy ready, DevMode
+disabled, supply policy enabled, development commands absent, journal audit retained,
+treasury settlement advertised, and Shops excluded from supply authority. A normal
+production-mode shop purchase then succeeded. Closing journal audit passed 5/5,
+pending=0, published=78.
+
 The resource provides:
 
 - Feather Contract 1 results, health, capabilities, and readiness;

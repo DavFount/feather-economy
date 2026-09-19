@@ -1,7 +1,7 @@
 Config = {
     Contract = 1,
     RequiredCoreContract = 1,
-    DevMode = true,
+    DevMode = false,
     SystemOwnerId = '00000000-0000-0000-0000-000000000001',
     Access = {
         trustedTreasuryProvisioners = {
@@ -35,7 +35,7 @@ Config = {
         }
     },
     Authorization = {
-        enabled = false,
+        enabled = true,
         issueAction = 'economy.currency.issue',
         destroyAction = 'economy.currency.destroy'
     },

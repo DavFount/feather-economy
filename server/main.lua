@@ -183,6 +183,44 @@ RegisterCommand('EconomyJournalAuditSmokeTest', function(source)
             tostring(state.ok and state.value.published)))
 end, true)
 
+RegisterCommand('EconomyReleaseContractSmokeTest',function(source)
+    if source~=0 then return end
+    local forbidden={
+        EconomyWalletProvisionTest=true,EconomyTransferContractSmokeTest=true,
+        EconomySupplyTest=true,EconomyTransferLiveTest=true,EconomyConcurrencyTest=true,
+        EconomyConcurrencyCleanup=true,EconomyShopFundingTest=true,
+        EconomyPaymentReversalContractSmokeTest=true,
+        EconomyTreasurySettlementContractSmokeTest=true,EconomyTreasuryContractSmokeTest=true,
+        EconomyTreasuryProvisionTest=true
+    }
+    local registered={}
+    local callable=type(GetRegisteredCommands)=='function'
+    if callable then
+        for _,command in ipairs(GetRegisteredCommands() or {}) do
+            local name=type(command)=='table' and command.name or nil
+            if type(name)=='string' then registered[name]=true end
+        end
+    end
+    local forbiddenAbsent=callable
+    if callable then for name in pairs(forbidden) do if registered[name] then forbiddenAbsent=false;break end end end
+    local capabilities=EconomyFoundation.GetCapabilities()
+    local tests={
+        {'service ready',EconomyFoundation.GetHealth().state=='ready'},
+        {'server development disabled',Config.DevMode==false},
+        {'supply authorization enabled',Config.Authorization.enabled==true},
+        {'development commands absent',forbiddenAbsent},
+        {'journal audit available',registered.EconomyJournalAuditSmokeTest==true},
+        {'capability treasury settlement',capabilities.ok and capabilities.value.features.treasurySettlement==1},
+        {'shops not trusted supplier',Config.Access.trustedSuppliers['feather-shops']~=true}
+    }
+    local passed=0
+    for _,test in ipairs(tests) do
+        if test[2] then passed=passed+1 end
+        print(('[EconomyReleaseContractSmokeTest] %-30s %s'):format(test[1],test[2] and 'PASS' or 'FAIL'))
+    end
+    print(('[EconomyReleaseContractSmokeTest] done %d/%d passed (read-only)'):format(passed,#tests))
+end,true)
+
 if Config.DevMode then
     RegisterCommand('EconomyWalletProvisionTest', function(source, args)
         if source ~= 0 then return end
