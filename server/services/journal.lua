@@ -70,11 +70,13 @@ local function Post(operation, request, context)
         referenceType = referenceType, referenceId = referenceId
     })
     local bodyResult, bodyError
-    local called, committed = pcall(MySQL.startTransaction, function(query)
+    local called, committed = pcall(DB.transaction, function(tx)
+        -- Values are passed as separate arguments so a nil anywhere binds SQL NULL.
+        local function query(sql, ...) return tx.raw(sql, ...) end
         local ok, result = pcall(function()
             if operation == 'reversal' then
                 local originals = query([[SELECT * FROM `economy_transactions`
-                    WHERE `transaction_id`=? FOR UPDATE]], { referenceId }) or {}
+                    WHERE `transaction_id`=? FOR UPDATE]], referenceId) or {}
                 local original = originals[1]
                 if not original or original.source_resource ~= resource
                     or original.operation_type ~= 'transfer' or original.status ~= 'committed'
@@ -82,7 +84,7 @@ local function Post(operation, request, context)
                     return Failure('reversal_not_allowed', 'Only this caller\'s committed shop payment can be reversed.')
                 end
                 local entries = query([[SELECT `account_id`,`amount` FROM `economy_entries`
-                    WHERE `transaction_id`=?]], { referenceId }) or {}
+                    WHERE `transaction_id`=?]], referenceId) or {}
                 local valid = #entries == 2
                 local debit, credit = false, false
                 for _, entry in ipairs(entries) do
@@ -99,14 +101,14 @@ local function Post(operation, request, context)
                      `reference_type`,`reference_id`,`source_resource`,`actor_account_id`,
                      `actor_character_id`,`correlation_id`,`idempotency_key`,`request_fingerprint`)
                 VALUES (UUID(),?,'pending',?,?,?,?,?,?,?,?,?,?)
-            ]], { operation, request.currency, reasonCode, referenceType, referenceId, resource,
+            ]], operation, request.currency, reasonCode, referenceType, referenceId, resource,
                 context.actorAccountId, context.actorCharacterId,
-                Text(context.correlationId, 128), idempotencyKey, fingerprint })
+                Text(context.correlationId, 128), idempotencyKey, fingerprint)
             local transactionRows = query([[
                 SELECT * FROM `economy_transactions`
                 WHERE `source_resource`=? AND `operation_type`=?
                   AND `idempotency_key`=? FOR UPDATE
-            ]], { resource, operation, idempotencyKey }) or {}
+            ]], resource, operation, idempotencyKey) or {}
             local transaction = transactionRows[1]
             if not transaction then return Failure('internal_error', 'Transfer request could not be reserved.') end
             if transaction.request_fingerprint ~= fingerprint then
@@ -130,7 +132,7 @@ local function Post(operation, request, context)
                 FROM `economy_accounts` a INNER JOIN `economy_balances` b
                   ON b.`account_id`=a.`account_id`
                 WHERE a.`account_id` IN (?,?) ORDER BY a.`account_id` FOR UPDATE
-            ]], { first, second }) or {}
+            ]], first, second) or {}
             local accounts = {}
             for _, row in ipairs(accountRows) do accounts[row.account_id] = row end
             local from, to = accounts[request.fromAccountId], accounts[request.toAccountId]
@@ -160,9 +162,9 @@ local function Post(operation, request, context)
                 return Failure('transaction_conflict', 'Destination balance limit would be exceeded.')
             end
             query('UPDATE `economy_balances` SET `posted_amount`=?,`revision`=`revision`+1 WHERE `account_id`=?',
-                { nextFrom, request.fromAccountId })
+                nextFrom, request.fromAccountId)
             query('UPDATE `economy_balances` SET `posted_amount`=?,`revision`=`revision`+1 WHERE `account_id`=?',
-                { nextTo, request.toAccountId })
+                nextTo, request.toAccountId)
             if Config.DevMode and resource == 'feather-economy'
                 and context.failureInjection == 'after_balance_update' then
                 return Failure('transaction_conflict',
@@ -172,8 +174,8 @@ local function Post(operation, request, context)
                 INSERT INTO `economy_entries`
                     (`entry_id`,`transaction_id`,`account_id`,`amount`,`resulting_balance`)
                 VALUES (UUID(),?,?,?,?),(UUID(),?,?,?,?)
-            ]], { transaction.transaction_id, request.fromAccountId, -amount, nextFrom,
-                transaction.transaction_id, request.toAccountId, amount, nextTo })
+            ]], transaction.transaction_id, request.fromAccountId, -amount, nextFrom,
+                transaction.transaction_id, request.toAccountId, amount, nextTo)
             local value = {
                 transactionId = transaction.transaction_id, currency = request.currency,
                 amount = amount, fromAccountId = request.fromAccountId,
@@ -187,12 +189,12 @@ local function Post(operation, request, context)
             query([[
                 UPDATE `economy_transactions` SET `status`='committed',`result_json`=?,
                     `posted_at`=CURRENT_TIMESTAMP WHERE `transaction_id`=?
-            ]], { encoded, transaction.transaction_id })
+            ]], encoded, transaction.transaction_id)
             query([[
                 INSERT INTO `economy_outbox`
                     (`event_id`,`event_type`,`aggregate_id`,`payload_json`)
                 VALUES (UUID(),'economy.transaction.posted.v1',?,?)
-            ]], { transaction.transaction_id, encoded })
+            ]], transaction.transaction_id, encoded)
             return EconomyResults.Ok(value)
         end)
         if not ok then bodyError = tostring(result) return false end
@@ -200,7 +202,9 @@ local function Post(operation, request, context)
         return EconomyResults.Is(result) and result.ok
     end)
     if not called then
-        return Failure('internal_error', 'Economy transfer transaction could not start.', {
+        -- DB.transaction raises after rolling back when a statement fails, and also
+        -- when the transaction cannot begin; either way nothing was committed.
+        return Failure('internal_error', 'Economy transfer transaction failed.', {
             reason = tostring(committed)
         })
     end
@@ -226,8 +230,8 @@ function EconomyJournal.ReversePayment(request, context)
     for key in pairs(request) do
         if key ~= 'transactionId' then return Failure('invalid_input', 'Unexpected reversal field.') end
     end
-    local original = MySQL.single.await([[SELECT * FROM `economy_transactions`
-        WHERE `transaction_id`=?]], { request.transactionId })
+    local original = DB.one([[SELECT * FROM `economy_transactions`
+        WHERE `transaction_id`=?]], request.transactionId)
     if not original or original.source_resource ~= context.resource
         or original.operation_type ~= 'transfer' or original.status ~= 'committed'
         or original.reason_code ~= 'shop.purchase' or original.reference_type ~= 'shop_order' then

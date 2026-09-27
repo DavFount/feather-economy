@@ -6,12 +6,12 @@ lua54 'yes'
 description 'Authoritative monetary accounting service for the Feather Framework'
 author 'Feather Framework'
 name 'feather-economy'
-version '0.1.4'
+version '0.2.0'
 
 shared_script 'shared/results.lua'
 
 server_scripts {
-    '@oxmysql/lib/MySQL.lua',
+    '@feather-mysql/lib/DB.lua',
     'config.lua',
     'server/logging.lua',
     'server/migrations/001_economy_foundation.lua',
@@ -31,6 +31,6 @@ server_scripts {
 }
 
 dependencies {
-    'oxmysql',
+    'feather-mysql',
     'feather-core'
 }

@@ -47,7 +47,7 @@ function EconomyCurrencies.Start()
         normalized[code] = result.value
     end
 
-    local rows = MySQL.query.await([[
+    local rows = DB.query([[
         SELECT `currency_code`,`precision` FROM `economy_currencies`
     ]]) or {}
     for _, row in ipairs(rows) do
@@ -73,7 +73,7 @@ function EconomyCurrencies.Start()
     table.sort(codes)
     for _, code in ipairs(codes) do
         local definition = normalized[code]
-        MySQL.query.await([[
+        DB.exec([[
             INSERT INTO `economy_currencies`
                 (`currency_code`,`label`,`precision`,`enabled`)
             VALUES (?,?,?,?)
@@ -82,10 +82,10 @@ function EconomyCurrencies.Start()
                     `revision` + 1, `revision`),
                 `label` = VALUES(`label`),
                 `enabled` = VALUES(`enabled`)
-        ]], { code, definition.label, definition.precision, definition.enabled and 1 or 0 })
+        ]], code, definition.label, definition.precision, definition.enabled and 1 or 0)
     end
 
-    local persisted = MySQL.query.await([[
+    local persisted = DB.query([[
         SELECT `currency_code`,`label`,`precision`,`enabled`,`revision`,
                `created_at`,`updated_at`
         FROM `economy_currencies` ORDER BY `currency_code`

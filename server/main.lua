@@ -147,13 +147,13 @@ end, true)
 RegisterCommand('EconomyJournalAuditSmokeTest', function(source)
     if source ~= 0 then return end
     local state = EconomyOutbox.GetState()
-    local unbalanced = tonumber(MySQL.scalar.await([[
+    local unbalanced = tonumber(DB.value([[
         SELECT COUNT(*) FROM (
             SELECT `transaction_id` FROM `economy_entries`
             GROUP BY `transaction_id` HAVING SUM(`amount`) <> 0
         ) audit
     ]])) or -1
-    local orphaned = tonumber(MySQL.scalar.await([[
+    local orphaned = tonumber(DB.value([[
         SELECT COUNT(*) FROM (
             SELECT t.`transaction_id` FROM `economy_transactions` t
             LEFT JOIN `economy_entries` e ON e.`transaction_id`=t.`transaction_id`
@@ -161,7 +161,7 @@ RegisterCommand('EconomyJournalAuditSmokeTest', function(source)
             HAVING COUNT(e.`entry_id`) < 2
         ) audit
     ]])) or 0
-    local invalidOutbox = tonumber(MySQL.scalar.await([[
+    local invalidOutbox = tonumber(DB.value([[
         SELECT COUNT(*) FROM `economy_outbox`
         WHERE `status` NOT IN ('pending','published')
     ]])) or -1
@@ -279,7 +279,7 @@ if Config.DevMode then
         sameRequest.toAccountId = sameRequest.fromAccountId
         sameRequest.idempotencyKey = 'transfer-contract-same-account'
         local same = EconomyJournal.Transfer(sameRequest, { resource = 'feather-economy' })
-        local transactionCount = tonumber(MySQL.scalar.await([[
+        local transactionCount = tonumber(DB.value([[
             SELECT COUNT(*) FROM `economy_transactions`
             WHERE `source_resource`='feather-economy'
               AND `idempotency_key` LIKE 'transfer-contract-%'
@@ -340,10 +340,10 @@ if Config.DevMode then
             idempotencyKey = requestId .. '-destroy'
         }, context, 'feather-economy') or issued
         local after = EconomyAccounts.Get(wallet.accountId)
-        local entrySum = issued.ok and tonumber(MySQL.scalar.await([[
+        local entrySum = issued.ok and tonumber(DB.value([[
             SELECT COALESCE(SUM(`amount`),0) FROM `economy_entries`
             WHERE `transaction_id`=?
-        ]], { issued.value.transactionId })) or nil
+        ]], issued.value.transactionId)) or nil
         local passed = issued.ok and replayed.ok and replayed.value.replayed == true
             and replayed.value.transactionId == issued.value.transactionId
             and not mismatch.ok and mismatch.code == 'idempotency_conflict'
@@ -449,11 +449,11 @@ if Config.DevMode then
             reasonCode = 'smoke.injected', referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId .. '-injected' }, injectedContext)
         local afterInjectedFrom, afterInjectedTo = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
-        local injectedReservationCount = tonumber(MySQL.scalar.await([[
+        local injectedReservationCount = tonumber(DB.value([[
             SELECT COUNT(*) FROM `economy_transactions`
             WHERE `source_resource`='feather-economy' AND `operation_type`='transfer'
               AND `idempotency_key`=?
-        ]], { requestId .. '-injected' })) or -1
+        ]], requestId .. '-injected')) or -1
         local injectionRolledBack = not injected.ok and injected.code == 'transaction_conflict'
             and afterInjectedFrom.ok and afterInjectedTo.ok
             and afterInjectedFrom.value.balance == fromBefore + 10000

@@ -42,7 +42,7 @@ RegisterCommand('EconomyTreasuryContractSmokeTest', function(source)
     Check('malformed UUID rejected', not invalid.ok and invalid.code == 'invalid_input')
     invalid = EconomyAPI.EnsureOrganizationTreasuries({ organizationId = Config.SystemOwnerId, balance = 100 }, 'feather-economy')
     Check('balance injection rejected', not invalid.ok and invalid.code == 'invalid_input')
-    local rows = MySQL.query.await([[SELECT `account_id` FROM `economy_accounts`
+    local rows = DB.query([[SELECT `account_id` FROM `economy_accounts`
         WHERE (`owner_type`='organization' AND `account_type`<>'treasury')
            OR (`account_type`='treasury' AND `owner_type`<>'organization')]]) or {}
     Check('owner type integrity', #rows == 0)

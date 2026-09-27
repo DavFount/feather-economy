@@ -9,7 +9,7 @@ local function Hash(value)
 end
 
 local function EnsureLedger()
-    MySQL.query.await([[
+    DB.exec([[
         CREATE TABLE IF NOT EXISTS `economy_schema_migrations` (
           `id` VARCHAR(100) NOT NULL,
           `checksum` VARCHAR(64) NOT NULL,
@@ -22,7 +22,7 @@ end
 function EconomyMigrationRunner.Run()
     local executed, result = xpcall(function()
         EnsureLedger()
-        local rows = MySQL.query.await(
+        local rows = DB.query(
             'SELECT `id`, `checksum` FROM `economy_schema_migrations`') or {}
         local applied = {}
         for _, row in ipairs(rows) do applied[row.id] = row.checksum end
@@ -49,11 +49,11 @@ function EconomyMigrationRunner.Run()
             if not applied[migration.id] then
                 logger.Info('migration.applying', { migrationId = migration.id })
                 for _, statement in ipairs(migration.statements) do
-                    MySQL.query.await(statement)
+                    DB.raw(statement)
                 end
-                MySQL.insert.await([[
+                DB.insert([[
                     INSERT INTO `economy_schema_migrations` (`id`,`checksum`) VALUES (?,?)
-                ]], { migration.id, checksum })
+                ]], migration.id, checksum)
                 appliedCount = appliedCount + 1
             end
         end
