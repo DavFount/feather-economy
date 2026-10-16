@@ -24,7 +24,13 @@ local function Failure(code, message, details)
     return EconomyResults.Err(code, message, details)
 end
 
-function EconomyJournal.AccountTypesAllowed(operation, from, to, request)
+-- Operated accounts: a movement under a reason code an operator registered is
+-- checked against that reason's shapes (server/services/operators.lua). Every
+-- other movement follows the v1 rules below.
+function EconomyJournal.AccountTypesAllowed(operation, from, to, request, resource, context, database)
+    if EconomyOperators.Allowed(operation, from, to, request, resource, context, database) then
+        return true
+    end
     return operation == 'transfer' and from.account_type == 'wallet'
         and (to.account_type == 'wallet' or to.account_type == 'system_sink'
             or (to.account_type == 'treasury' and to.owner_type == 'organization'
@@ -44,7 +50,9 @@ local function Post(operation, request, context)
     local trusted = operation == 'reversal' and Config.Access.trustedReversers
         or operation == 'transfer' and Config.Access.trustedTransactors
         or Config.Access.trustedSuppliers
-    if type(resource) ~= 'string' or not trusted[resource] then
+    local operatorSupply = operation == 'issue'
+        and EconomyOperators.SupplyAllowed(resource, request.reasonCode)
+    if type(resource) ~= 'string' or not (trusted[resource] or operatorSupply) then
         return Failure('authorization_denied',
             'Calling resource is not authorized to transfer currency.')
     end
@@ -127,7 +135,7 @@ local function Post(operation, request, context)
             local first, second = request.fromAccountId, request.toAccountId
             if second < first then first, second = second, first end
             local accountRows = query([[
-                SELECT a.`account_id`,a.`owner_type`,a.`account_type`,a.`currency_code`,a.`status`,
+                SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`currency_code`,a.`status`,
                        b.`posted_amount`,b.`revision`
                 FROM `economy_accounts` a INNER JOIN `economy_balances` b
                   ON b.`account_id`=a.`account_id`
@@ -143,7 +151,7 @@ local function Post(operation, request, context)
             if from.currency_code ~= request.currency or to.currency_code ~= request.currency then
                 return Failure('currency_mismatch', 'Transfer accounts do not use the requested currency.')
             end
-            local typesAllowed = EconomyJournal.AccountTypesAllowed(operation, from, to, request)
+            local typesAllowed = EconomyJournal.AccountTypesAllowed(operation, from, to, request, resource, context, tx)
             if not typesAllowed then
                 return Failure('authorization_denied', 'These account types cannot use a normal transfer.')
             end
@@ -274,6 +282,40 @@ local function Supply(operation, request, context)
         post.fromAccountId, post.toAccountId = request.accountId, systemAccount.accountId
     end
     return Post(operation, post, context)
+end
+
+-- One journal transaction with its entries, for reconciliation by the resource
+-- that posted it. Returns nil when the transaction does not exist.
+function EconomyJournal.GetTransaction(transactionId)
+    if not IsUuid(transactionId) then return nil end
+    local row = DB.one([[
+        SELECT `transaction_id`,`operation_type`,`status`,`currency_code`,`reason_code`,`reference_type`,
+               `reference_id`,`source_resource`,`correlation_id`,`created_at`,`posted_at`
+        FROM `economy_transactions` WHERE `transaction_id`=? LIMIT 1
+    ]], transactionId:lower())
+    if not row then return nil end
+    local entries, amount = {}, 0
+    for _, entry in ipairs(DB.query([[SELECT `account_id`,`amount` FROM `economy_entries`
+        WHERE `transaction_id`=? ORDER BY `amount`,`account_id`]], row.transaction_id) or {}) do
+        local value = tonumber(entry.amount)
+        entries[#entries + 1] = { accountId = entry.account_id, amount = value }
+        if value > 0 then amount = amount + value end
+    end
+    return {
+        transactionId = row.transaction_id,
+        operation = row.operation_type,
+        status = row.status,
+        currency = row.currency_code,
+        amount = amount,
+        reasonCode = row.reason_code,
+        referenceType = row.reference_type,
+        referenceId = row.reference_id,
+        sourceResource = row.source_resource,
+        correlationId = row.correlation_id,
+        createdAt = row.created_at,
+        postedAt = row.posted_at,
+        entries = entries
+    }
 end
 
 function EconomyJournal.Issue(request, context) return Supply('issue', request, context) end

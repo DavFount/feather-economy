@@ -20,6 +20,7 @@ local function Normalize(row)
         ownerType = row.owner_type,
         ownerId = row.owner_id,
         accountType = row.account_type,
+        accountRef = row.account_ref ~= '' and row.account_ref or nil,
         currency = row.currency_code,
         status = row.status,
         label = row.label,
@@ -56,7 +57,8 @@ local function RunTransaction(body)
     return Copy(bodyResult)
 end
 
-local function Ensure(ownerType, ownerId, accountTypes)
+local function Ensure(ownerType, ownerId, accountTypes, accountRef)
+    accountRef = accountRef or ''
     if (ownerType ~= 'character' and ownerType ~= 'system' and ownerType ~= 'organization') or not IsUuid(ownerId) then
         return EconomyResults.Err('invalid_input', 'A valid account owner is required.')
     end
@@ -68,18 +70,19 @@ local function Ensure(ownerType, ownerId, accountTypes)
         for _, currency in ipairs(currencies.value) do
             for _, accountType in ipairs(accountTypes) do
                 local label = ('%s %s'):format(currency.label, (accountType:gsub('_', ' ')))
+                if accountRef ~= '' then label = label .. ' ' .. accountRef end
                 query([[
                     INSERT IGNORE INTO `economy_accounts`
-                        (`account_id`,`owner_type`,`owner_id`,`account_type`,`currency_code`,`status`,`label`)
-                    VALUES (UUID(),?,?,?,?, 'open', ?)
-                ]], ownerType, ownerId, accountType, currency.code, label)
+                        (`account_id`,`owner_type`,`owner_id`,`account_type`,`account_ref`,`currency_code`,`status`,`label`)
+                    VALUES (UUID(),?,?,?,?,?, 'open', ?)
+                ]], ownerType, ownerId, accountType, accountRef, currency.code, label)
                 local rows = query([[
-                    SELECT `account_id`,`owner_type`,`owner_id`,`account_type`,`currency_code`,
+                    SELECT `account_id`,`owner_type`,`owner_id`,`account_type`,`account_ref`,`currency_code`,
                            `status`,`label`,`revision` AS `account_revision`,`created_at`,`closed_at`
                     FROM `economy_accounts`
                     WHERE `owner_type`=? AND `owner_id`=? AND `account_type`=?
-                      AND `currency_code`=? FOR UPDATE
-                ]], ownerType, ownerId, accountType, currency.code) or {}
+                      AND `account_ref`=? AND `currency_code`=? FOR UPDATE
+                ]], ownerType, ownerId, accountType, accountRef, currency.code) or {}
                 local account = rows[1]
                 if not account or account.status ~= 'open' then
                     return EconomyResults.Err('account_closed',
@@ -131,12 +134,76 @@ function EconomyAccounts.EnsureOrganizationTreasuries(organizationId)
     return Ensure('organization', organizationId, { 'treasury' })
 end
 
+local function IsAccountRef(value)
+    return type(value) == 'string' and #value >= 1 and #value <= 64
+        and value:match('^[A-Za-z0-9][A-Za-z0-9._:%-]*$') ~= nil
+end
+
+-- One bank account per currency for each (character, accountRef). A character
+-- may hold several bank accounts by using different references.
+function EconomyAccounts.EnsureCharacterBankAccounts(characterId, accountRef)
+    if not IsAccountRef(accountRef) then
+        return EconomyResults.Err('invalid_input', 'A bank account reference is required.')
+    end
+    return Ensure('character', characterId, { 'bank' }, accountRef)
+end
+
+-- Newest-first journal entries for one account, in posting order (entry
+-- sequence, migration 007). Each row names the account on the other side of the
+-- movement so a consumer can render a statement without reading the journal
+-- tables itself. Offsets count from the newest entry, so entries posted between
+-- two page reads shift later pages; `sequence` lets a consumer drop repeats.
+function EconomyAccounts.ListEntries(accountId, limit, offset)
+    if not IsUuid(accountId) then
+        return EconomyResults.Err('invalid_input', 'accountId must be a UUID.')
+    end
+    local maximum = Config.Limits.maximumPageSize
+    limit = limit == nil and maximum or tonumber(limit)
+    offset = offset == nil and 0 or tonumber(offset)
+    if not limit or limit < 1 or limit > maximum or limit ~= math.floor(limit)
+        or not offset or offset < 0 or offset > 100000 or offset ~= math.floor(offset) then
+        return EconomyResults.Err('invalid_input', 'limit or offset is out of range.')
+    end
+    local rows = DB.query([[
+        SELECT e.`entry_id`,e.`entry_sequence`,e.`transaction_id`,e.`amount`,e.`resulting_balance`,
+               t.`operation_type`,t.`currency_code`,t.`reason_code`,t.`reference_type`,
+               t.`reference_id`,t.`source_resource`,t.`posted_at`,
+               c.`account_id` AS `counterparty_account_id`
+        FROM `economy_entries` e
+        INNER JOIN `economy_transactions` t ON t.`transaction_id`=e.`transaction_id`
+        LEFT JOIN `economy_entries` c
+               ON c.`transaction_id`=e.`transaction_id` AND c.`account_id`<>e.`account_id`
+        WHERE e.`account_id`=? AND t.`status`='committed'
+        ORDER BY t.`posted_at` DESC,e.`entry_sequence` DESC
+        LIMIT ? OFFSET ?
+    ]], accountId, limit, offset) or {}
+    local entries = {}
+    for _, row in ipairs(rows) do
+        entries[#entries + 1] = {
+            entryId = row.entry_id,
+            sequence = tonumber(row.entry_sequence),
+            transactionId = row.transaction_id,
+            operation = row.operation_type,
+            currency = row.currency_code,
+            amount = tonumber(row.amount),
+            resultingBalance = tonumber(row.resulting_balance),
+            reasonCode = row.reason_code,
+            referenceType = row.reference_type,
+            referenceId = row.reference_id,
+            sourceResource = row.source_resource,
+            counterpartyAccountId = row.counterparty_account_id,
+            postedAt = row.posted_at
+        }
+    end
+    return EconomyResults.Ok(entries)
+end
+
 function EconomyAccounts.Get(accountId)
     if not IsUuid(accountId) then
         return EconomyResults.Err('invalid_input', 'accountId must be a UUID.')
     end
     local row = DB.one([[
-        SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`currency_code`,
+        SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`account_ref`,a.`currency_code`,
                a.`status`,a.`label`,a.`revision` AS `account_revision`,a.`created_at`,a.`closed_at`,
                b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`
         FROM `economy_accounts` a
@@ -154,13 +221,13 @@ function EconomyAccounts.FindByOwner(ownerType, ownerId)
         return EconomyResults.Err('invalid_input', 'A valid account owner is required.')
     end
     local rows = DB.query([[
-        SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`currency_code`,
+        SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`account_ref`,a.`currency_code`,
                a.`status`,a.`label`,a.`revision` AS `account_revision`,a.`created_at`,a.`closed_at`,
                b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`
         FROM `economy_accounts` a
         INNER JOIN `economy_balances` b ON b.`account_id`=a.`account_id`
         WHERE a.`owner_type`=? AND a.`owner_id`=?
-        ORDER BY a.`currency_code`,a.`account_type`
+        ORDER BY a.`currency_code`,a.`account_type`,a.`account_ref`
         LIMIT ?
     ]], ownerType, ownerId, Config.Limits.maximumPageSize)
     local accounts = {}

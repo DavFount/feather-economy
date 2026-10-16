@@ -15,7 +15,15 @@ CreateThread(function()
     local started = EconomyFoundation.BeginStartup()
     if not started.ok then return Fail(started) end
 
-    local migrations = EconomyMigrationRunner.Run()
+    -- Development only: `set economy_dev_migration_fault checksum|failure|invalid`
+    -- injects a migration fault so a restart shows startup failing closed.
+    local fault = Config.DevMode and GetConvar('economy_dev_migration_fault', '') or ''
+    local definitions = (fault == 'checksum' or fault == 'failure' or fault == 'invalid')
+        and EconomyMigrationRunner.FaultDefinitions(fault) or nil
+    if fault ~= '' then
+        logger.Warn('migration.fault_injected', { fault = fault, injected = definitions ~= nil })
+    end
+    local migrations = EconomyMigrationRunner.Run(definitions)
     if not migrations.ok then
         return Fail(EconomyFoundation.MarkFailed(
             migrations.code, migrations.message, migrations.details))
@@ -121,9 +129,12 @@ RegisterCommand('EconomyAccountContractSmokeTest', function(source)
             for _ in pairs(distinct) do count = count + 1 end
             return count == 4
         end)() },
-        { 'zero balances', system.ok and (function()
+        -- Supply moves value out of the source and into the sink; nothing moves
+        -- value into the source or out of the sink except a payment reversal.
+        { 'system balance signs', system.ok and (function()
             for _, account in ipairs(system.value) do
-                if account.balance ~= 0 or account.balanceRevision ~= 1 then return false end
+                if account.accountType == 'system_source' and account.balance > 0 then return false end
+                if account.accountType == 'system_sink' and account.balance < 0 then return false end
             end
             return true
         end)() },
@@ -191,7 +202,8 @@ RegisterCommand('EconomyReleaseContractSmokeTest',function(source)
         EconomyConcurrencyCleanup=true,EconomyShopFundingTest=true,
         EconomyPaymentReversalContractSmokeTest=true,
         EconomyTreasurySettlementContractSmokeTest=true,EconomyTreasuryContractSmokeTest=true,
-        EconomyTreasuryProvisionTest=true
+        EconomyTreasuryProvisionTest=true,EconomyBankLiveTest=true,
+        EconomyHistoryPaginationTest=true,EconomyMigrationFaultTest=true,EconomyRestartTest=true
     }
     local registered={}
     local callable=type(GetRegisteredCommands)=='function'
@@ -224,18 +236,13 @@ end,true)
 if Config.DevMode then
     RegisterCommand('EconomyWalletProvisionTest', function(source, args)
         if source ~= 0 then return end
-        local target = tonumber(args and args[1])
-        if not target then
-            print('[EconomyWalletProvisionTest] usage: EconomyWalletProvisionTest <source>')
+        local characterId = EconomyTests.Character(args and args[1])
+        if not characterId then
+            print('[EconomyWalletProvisionTest] usage: EconomyWalletProvisionTest <character UUID|server id>')
             return
         end
-        local session = exports['feather-core']:GetSessionContext(target)
-        if type(session) ~= 'table' or not session.ok then
-            print('[EconomyWalletProvisionTest] FAIL active character session required')
-            return
-        end
-        local first = EconomyAccounts.EnsureCharacterWallets(session.value.characterId)
-        local second = EconomyAccounts.EnsureCharacterWallets(session.value.characterId)
+        local first = EconomyAccounts.EnsureCharacterWallets(characterId)
+        local second = EconomyAccounts.EnsureCharacterWallets(characterId)
         local same = first.ok and second.ok and #first.value == 2 and #second.value == 2
         if same then
             for index = 1, #first.value do
@@ -244,19 +251,18 @@ if Config.DevMode then
             end
         end
         print(('[EconomyWalletProvisionTest] %s character=%s wallets=%s idempotent=%s'):format(
-            same and 'PASS' or 'FAIL', tostring(session.value.characterId),
+            same and 'PASS' or 'FAIL', tostring(characterId),
             tostring(first.ok and #first.value or 0), tostring(same)))
     end, true)
 
     RegisterCommand('EconomyTransferContractSmokeTest', function(source, args)
         if source ~= 0 then return end
-        local target = tonumber(args and args[1])
-        local session = target and exports['feather-core']:GetSessionContext(target) or nil
-        if type(session) ~= 'table' or not session.ok then
-            print('[EconomyTransferContractSmokeTest] usage: EconomyTransferContractSmokeTest <active source>')
+        local characterId = EconomyTests.Character(args and args[1])
+        if not characterId then
+            print('[EconomyTransferContractSmokeTest] usage: EconomyTransferContractSmokeTest <character UUID|server id>')
             return
         end
-        local wallets = EconomyAccounts.EnsureCharacterWallets(session.value.characterId)
+        local wallets = EconomyAccounts.EnsureCharacterWallets(characterId)
         local system = EconomyAccounts.FindByOwner('system', Config.SystemOwnerId)
         local from, sink
         for _, account in ipairs(wallets.ok and wallets.value or {}) do
@@ -310,13 +316,13 @@ if Config.DevMode then
 
     RegisterCommand('EconomySupplyTest', function(source, args)
         if source ~= 0 then return end
-        local target, requestId = tonumber(args and args[1]), args and args[2]
-        local session = target and exports['feather-core']:GetSessionContext(target) or nil
-        if type(session) ~= 'table' or not session.ok or type(requestId) ~= 'string' then
-            print('[EconomySupplyTest] usage: EconomySupplyTest <active source> <fresh requestId>')
+        local characterId, target = EconomyTests.Character(args and args[1])
+        local requestId = args and args[2]
+        if not characterId or not EconomyTests.RequestId(requestId) then
+            print('[EconomySupplyTest] usage: EconomySupplyTest <character UUID|server id> <fresh requestId>')
             return
         end
-        local wallets = EconomyAccounts.EnsureCharacterWallets(session.value.characterId)
+        local wallets = EconomyAccounts.EnsureCharacterWallets(characterId)
         local wallet
         for _, account in ipairs(wallets.ok and wallets.value or {}) do
             if account.currency == 'dollars' then wallet = account end
@@ -327,18 +333,18 @@ if Config.DevMode then
             reasonCode = 'smoke.issue', referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId }
         local context = { resource = 'feather-economy', actorSource = target,
-            actorCharacterId = session.value.characterId, correlationId = 'supply:' .. requestId }
-        local issued = EconomyAPI.Issue(request, context, 'feather-economy')
-        local replayed = EconomyAPI.Issue(request, context, 'feather-economy')
+            actorCharacterId = characterId, correlationId = 'supply:' .. requestId }
+        local issued = EconomyJournal.Issue(request, context)
+        local replayed = EconomyJournal.Issue(request, context)
         local mismatchRequest = {}
         for key, value in pairs(request) do mismatchRequest[key] = value end
         mismatchRequest.amount = request.amount + 1
-        local mismatch = EconomyAPI.Issue(mismatchRequest, context, 'feather-economy')
-        local destroyed = issued.ok and EconomyAPI.Destroy({
+        local mismatch = EconomyJournal.Issue(mismatchRequest, context)
+        local destroyed = issued.ok and EconomyJournal.Destroy({
             accountId = wallet.accountId, currency = 'dollars', amount = request.amount,
             reasonCode = 'smoke.destroy', referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId .. '-destroy'
-        }, context, 'feather-economy') or issued
+        }, context) or issued
         local after = EconomyAccounts.Get(wallet.accountId)
         local entrySum = issued.ok and tonumber(DB.value([[
             SELECT COALESCE(SUM(`amount`),0) FROM `economy_entries`
@@ -358,14 +364,12 @@ if Config.DevMode then
 
     RegisterCommand('EconomyTransferLiveTest', function(source, args)
         if source ~= 0 then return end
-        local senderSource, recipientSource = tonumber(args and args[1]), tonumber(args and args[2])
+        local senderId, senderSource = EconomyTests.Character(args and args[1])
+        local recipientId = EconomyTests.Character(args and args[2])
         local requestId = args and args[3]
-        local sender = senderSource and exports['feather-core']:GetSessionContext(senderSource) or nil
-        local recipient = recipientSource and exports['feather-core']:GetSessionContext(recipientSource) or nil
-        if type(sender) ~= 'table' or not sender.ok or type(recipient) ~= 'table'
-            or not recipient.ok or sender.value.characterId == recipient.value.characterId
-            or type(requestId) ~= 'string' then
-            print('[EconomyTransferLiveTest] usage: EconomyTransferLiveTest <sender> <recipient> <fresh requestId>')
+        if not senderId or not recipientId or senderId == recipientId
+            or not EconomyTests.RequestId(requestId) then
+            print('[EconomyTransferLiveTest] usage: EconomyTransferLiveTest <sender UUID|server id> <recipient UUID|server id> <fresh requestId>')
             return
         end
         local function Dollars(characterId)
@@ -374,30 +378,30 @@ if Config.DevMode then
                 if account.currency == 'dollars' then return account end
             end
         end
-        local from, to = Dollars(sender.value.characterId), Dollars(recipient.value.characterId)
+        local from, to = Dollars(senderId), Dollars(recipientId)
         if not from or not to then print('[EconomyTransferLiveTest] FAIL wallets unavailable'); return end
         local fromBefore, toBefore = from.balance, to.balance
         local context = { resource = 'feather-economy', actorSource = senderSource,
-            actorCharacterId = sender.value.characterId, correlationId = 'transfer-live:' .. requestId }
-        local issued = EconomyAPI.Issue({ accountId = from.accountId, currency = 'dollars',
+            actorCharacterId = senderId, correlationId = 'transfer-live:' .. requestId }
+        local issued = EconomyJournal.Issue({ accountId = from.accountId, currency = 'dollars',
             amount = 10000, reasonCode = 'smoke.issue', referenceType = 'smoke',
             referenceId = requestId, idempotencyKey = requestId .. '-issue' },
-            context, 'feather-economy')
+            context)
         local transferRequest = { fromAccountId = from.accountId, toAccountId = to.accountId,
             currency = 'dollars', amount = 4000, reasonCode = 'smoke.transfer',
             referenceType = 'smoke', referenceId = requestId, idempotencyKey = requestId }
         local transferred = issued.ok and EconomyJournal.Transfer(transferRequest, context) or issued
         local replayed = transferred.ok and EconomyJournal.Transfer(transferRequest, context) or transferred
-        local destroyedFrom = transferred.ok and EconomyAPI.Destroy({ accountId = from.accountId,
+        local destroyedFrom = transferred.ok and EconomyJournal.Destroy({ accountId = from.accountId,
             currency = 'dollars', amount = 6000, reasonCode = 'smoke.destroy',
             referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId .. '-destroy-sender' },
-            context, 'feather-economy') or transferred
-        local destroyedTo = destroyedFrom.ok and EconomyAPI.Destroy({ accountId = to.accountId,
+            context) or transferred
+        local destroyedTo = destroyedFrom.ok and EconomyJournal.Destroy({ accountId = to.accountId,
             currency = 'dollars', amount = 4000, reasonCode = 'smoke.destroy',
             referenceType = 'smoke', referenceId = requestId,
             idempotencyKey = requestId .. '-destroy-recipient' },
-            context, 'feather-economy') or destroyedFrom
+            context) or destroyedFrom
         local fromAfter, toAfter = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
         local passed = issued.ok and transferred.ok and replayed.ok and replayed.value.replayed == true
             and replayed.value.transactionId == transferred.value.transactionId
@@ -412,14 +416,12 @@ if Config.DevMode then
 
     RegisterCommand('EconomyConcurrencyTest', function(source, args)
         if source ~= 0 then return end
-        local senderSource, recipientSource = tonumber(args and args[1]), tonumber(args and args[2])
+        local senderId, senderSource = EconomyTests.Character(args and args[1])
+        local recipientId = EconomyTests.Character(args and args[2])
         local requestId = args and args[3]
-        local sender = senderSource and exports['feather-core']:GetSessionContext(senderSource) or nil
-        local recipient = recipientSource and exports['feather-core']:GetSessionContext(recipientSource) or nil
-        if type(sender) ~= 'table' or not sender.ok or type(recipient) ~= 'table'
-            or not recipient.ok or sender.value.characterId == recipient.value.characterId
-            or type(requestId) ~= 'string' then
-            print('[EconomyConcurrencyTest] usage: EconomyConcurrencyTest <sender> <recipient> <fresh requestId>')
+        if not senderId or not recipientId or senderId == recipientId
+            or not EconomyTests.RequestId(requestId) then
+            print('[EconomyConcurrencyTest] usage: EconomyConcurrencyTest <sender UUID|server id> <recipient UUID|server id> <fresh requestId>')
             return
         end
         local function Dollars(characterId)
@@ -428,21 +430,21 @@ if Config.DevMode then
                 if account.currency == 'dollars' then return account end
             end
         end
-        local from, to = Dollars(sender.value.characterId), Dollars(recipient.value.characterId)
+        local from, to = Dollars(senderId), Dollars(recipientId)
         if not from or not to then print('[EconomyConcurrencyTest] FAIL wallets unavailable'); return end
         local fromBefore, toBefore = from.balance, to.balance
         local context = { resource = 'feather-economy', actorSource = senderSource,
-            actorCharacterId = sender.value.characterId, correlationId = 'concurrency:' .. requestId }
-        local issued = EconomyAPI.Issue({ accountId = from.accountId, currency = 'dollars',
+            actorCharacterId = senderId, correlationId = 'concurrency:' .. requestId }
+        local issued = EconomyJournal.Issue({ accountId = from.accountId, currency = 'dollars',
             amount = 10000, reasonCode = 'smoke.issue', referenceType = 'smoke',
             referenceId = requestId, idempotencyKey = requestId .. '-issue' },
-            context, 'feather-economy')
+            context)
         if not issued.ok then
             print(('[EconomyConcurrencyTest] FAIL funding code=%s'):format(tostring(issued.code)))
             return
         end
         local injectedContext = { resource = 'feather-economy', actorSource = senderSource,
-            actorCharacterId = sender.value.characterId, correlationId = 'injected:' .. requestId,
+            actorCharacterId = senderId, correlationId = 'injected:' .. requestId,
             failureInjection = 'after_balance_update' }
         local injected = EconomyJournal.Transfer({ fromAccountId = from.accountId,
             toAccountId = to.accountId, currency = 'dollars', amount = 1,
@@ -484,14 +486,14 @@ if Config.DevMode then
         local conserved = senderNow.ok and recipientNow.ok
             and senderNow.value.balance == fromBefore + 2500
             and recipientNow.value.balance == toBefore + 7500
-        local destroyedSender = conserved and EconomyAPI.Destroy({ accountId = from.accountId,
+        local destroyedSender = conserved and EconomyJournal.Destroy({ accountId = from.accountId,
             currency = 'dollars', amount = 2500, reasonCode = 'smoke.destroy',
             referenceType = 'smoke', referenceId = requestId,
-            idempotencyKey = requestId .. '-destroy-sender' }, context, 'feather-economy') or nil
-        local destroyedRecipient = destroyedSender and destroyedSender.ok and EconomyAPI.Destroy({
+            idempotencyKey = requestId .. '-destroy-sender' }, context) or nil
+        local destroyedRecipient = destroyedSender and destroyedSender.ok and EconomyJournal.Destroy({
             accountId = to.accountId, currency = 'dollars', amount = 7500,
             reasonCode = 'smoke.destroy', referenceType = 'smoke', referenceId = requestId,
-            idempotencyKey = requestId .. '-destroy-recipient' }, context, 'feather-economy') or nil
+            idempotencyKey = requestId .. '-destroy-recipient' }, context) or nil
         local fromAfter, toAfter = EconomyAccounts.Get(from.accountId), EconomyAccounts.Get(to.accountId)
         local restored = destroyedSender and destroyedSender.ok and destroyedRecipient
             and destroyedRecipient.ok and fromAfter.ok and toAfter.ok
