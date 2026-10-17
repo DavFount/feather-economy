@@ -70,6 +70,11 @@ RegisterCommand('EconomyReleaseGateSmokeTest', function(source)
         Check('history rejects bad limits and offsets', rejected)
         local defaults = History(Config.SystemOwnerId)
         Check('history defaults accepted', defaults.ok and #defaults.value == 0)
+        local both = EconomyAPI.ListAccountEntries({ accountId = Config.SystemOwnerId, before = 1, offset = 0 },
+            'feather-economy')
+        Check('history rejects before with offset', not both.ok and both.code == 'invalid_input')
+        local foreign = EconomyAPI.ListAccountEntries({ accountId = Config.SystemOwnerId, before = 1 }, 'feather-economy')
+        Check('history rejects a cursor of another account', not foreign.ok and foreign.code == 'invalid_cursor')
 
         -- Ordering and paging on the account with the most entries.
         local busiest = DB.one([[SELECT `account_id`, COUNT(*) AS `entries` FROM `economy_entries`
@@ -185,8 +190,9 @@ end, true)
 if not Config.DevMode then return end
 
 -- Usage: EconomyHistoryPaginationTest <character UUID|server id> <fresh requestId>
--- Issues 1..7 cents to the character's dollars wallet, pages the history, then
--- destroys the 28 cents so the wallet finishes at its original balance.
+-- Issues 1..7 cents to the character's dollars wallet, pages the history (by
+-- offset and by cursor, posting an 8th cent between two cursor pages), then
+-- destroys the 36 cents so the wallet finishes at its original balance.
 RegisterCommand('EconomyHistoryPaginationTest', function(source, args)
     if source ~= 0 then return end
     local Check, Result = EconomyTests.Counter('EconomyHistoryPaginationTest')
@@ -254,6 +260,31 @@ RegisterCommand('EconomyHistoryPaginationTest', function(source, args)
             wallet.accountId)) or 0
         Check('last page is partial', #Page(5, total - 2) == 2)
         Check('offset past the end is empty', #Page(5, total) == 0)
+
+        -- Cursor paging stays stable while a new entry is posted between pages.
+        local function Cursor(limit, before)
+            local page = EconomyAPI.ListAccountEntries({ accountId = wallet.accountId, limit = limit,
+                before = before }, 'feather-economy')
+            assert(page.ok, 'cursor read failed: ' .. tostring(page.code))
+            return page
+        end
+        local first = Cursor(3)
+        Check('cursor names the next page', first.meta ~= nil and first.meta.nextBefore == whole[3].sequence)
+        local late = EconomyJournal.Issue({ accountId = wallet.accountId, currency = 'dollars',
+            amount = 8, reasonCode = 'smoke.pagination', referenceType = 'smoke',
+            referenceId = requestId, idempotencyKey = ('%s:issue:8'):format(requestId) }, context)
+        assert(late.ok and not late.value.replayed, 'issue failed or requestId reused: ' .. tostring(late.code))
+        issued = issued + 8
+        local second = Cursor(3, first.meta and first.meta.nextBefore)
+        local third = Cursor(3, second.meta and second.meta.nextBefore)
+        local walked = {}
+        for _, page in ipairs({ first, second, third }) do
+            for _, entry in ipairs(page.value) do walked[#walked + 1] = entry end
+        end
+        local stable = #walked >= 7
+        for index = 1, stable and 7 or 0 do stable = stable and walked[index].entryId == whole[index].entryId end
+        Check('cursor pages stable while a new entry posts', stable)
+        Check('new entry listed first', Cursor(1).value[1].amount == 8)
     end, debug.traceback)
     if not called then print('[EconomyHistoryPaginationTest] FAIL ' .. tostring(failure)) end
     if issued > 0 then

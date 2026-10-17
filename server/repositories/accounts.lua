@@ -29,7 +29,9 @@ local function Normalize(row)
         balanceRevision = tonumber(row.balance_revision),
         createdAt = row.created_at,
         closedAt = row.closed_at,
-        updatedAt = row.updated_at
+        updatedAt = row.updated_at,
+        -- The resource an organization treasury is bound to (operated accounts).
+        operatorResource = row.operator_resource
     }
 end
 
@@ -153,17 +155,46 @@ end
 -- movement so a consumer can render a statement without reading the journal
 -- tables itself. Offsets count from the newest entry, so entries posted between
 -- two page reads shift later pages; `sequence` lets a consumer drop repeats.
-function EconomyAccounts.ListEntries(accountId, limit, offset)
+-- Newest first. A page continues from `before` (the sequence of the last entry
+-- already read, given back as meta.nextBefore) or skips `offset` entries; the
+-- cursor is stable while new entries are posted, the offset is not.
+function EconomyAccounts.ListEntries(accountId, limit, offset, before)
     if not IsUuid(accountId) then
         return EconomyResults.Err('invalid_input', 'accountId must be a UUID.')
     end
     local maximum = Config.Limits.maximumPageSize
     limit = limit == nil and maximum or tonumber(limit)
+    if before ~= nil and offset ~= nil then
+        return EconomyResults.Err('invalid_input', 'Use before or offset, not both.')
+    end
     offset = offset == nil and 0 or tonumber(offset)
     if not limit or limit < 1 or limit > maximum or limit ~= math.floor(limit)
         or not offset or offset < 0 or offset > 100000 or offset ~= math.floor(offset) then
         return EconomyResults.Err('invalid_input', 'limit or offset is out of range.')
     end
+    local cursor = ''
+    local params = { accountId }
+    if before ~= nil then
+        before = tonumber(before)
+        if not before or before < 1 or before ~= math.floor(before) then
+            return EconomyResults.Err('invalid_input', 'before must be an entry sequence.')
+        end
+        -- The cursor entry must belong to this account; its posting time anchors
+        -- the page in the same order the history is listed in.
+        local anchor = DB.one([[SELECT DATE_FORMAT(t.`posted_at`,'%Y-%m-%d %H:%i:%s') AS `posted_at`
+            FROM `economy_entries` e
+            INNER JOIN `economy_transactions` t ON t.`transaction_id`=e.`transaction_id`
+            WHERE e.`entry_sequence`=? AND e.`account_id`=?]], before, accountId)
+        if not anchor then
+            return EconomyResults.Err('invalid_cursor', 'before does not name an entry of this account.')
+        end
+        cursor = ' AND (t.`posted_at`<? OR (t.`posted_at`=? AND e.`entry_sequence`<?))'
+        params[#params + 1] = anchor.posted_at
+        params[#params + 1] = anchor.posted_at
+        params[#params + 1] = before
+    end
+    params[#params + 1] = limit
+    params[#params + 1] = offset
     local rows = DB.query([[
         SELECT e.`entry_id`,e.`entry_sequence`,e.`transaction_id`,e.`amount`,e.`resulting_balance`,
                t.`operation_type`,t.`currency_code`,t.`reason_code`,t.`reference_type`,
@@ -173,10 +204,10 @@ function EconomyAccounts.ListEntries(accountId, limit, offset)
         INNER JOIN `economy_transactions` t ON t.`transaction_id`=e.`transaction_id`
         LEFT JOIN `economy_entries` c
                ON c.`transaction_id`=e.`transaction_id` AND c.`account_id`<>e.`account_id`
-        WHERE e.`account_id`=? AND t.`status`='committed'
+        WHERE e.`account_id`=? AND t.`status`='committed']] .. cursor .. [[
         ORDER BY t.`posted_at` DESC,e.`entry_sequence` DESC
         LIMIT ? OFFSET ?
-    ]], accountId, limit, offset) or {}
+    ]], table.unpack(params)) or {}
     local entries = {}
     for _, row in ipairs(rows) do
         entries[#entries + 1] = {
@@ -195,7 +226,9 @@ function EconomyAccounts.ListEntries(accountId, limit, offset)
             postedAt = row.posted_at
         }
     end
-    return EconomyResults.Ok(entries)
+    -- A full page may have more after it; an empty meta means the history ended.
+    local meta = #entries == limit and { nextBefore = entries[#entries].sequence } or nil
+    return EconomyResults.Ok(entries, meta)
 end
 
 function EconomyAccounts.Get(accountId)
@@ -205,9 +238,11 @@ function EconomyAccounts.Get(accountId)
     local row = DB.one([[
         SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`account_ref`,a.`currency_code`,
                a.`status`,a.`label`,a.`revision` AS `account_revision`,a.`created_at`,a.`closed_at`,
-               b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`
+               b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`,o.`operator_resource`
         FROM `economy_accounts` a
         INNER JOIN `economy_balances` b ON b.`account_id`=a.`account_id`
+        LEFT JOIN `economy_treasury_operators` o
+               ON a.`owner_type`='organization' AND a.`account_type`='treasury' AND o.`organization_id`=a.`owner_id`
         WHERE a.`account_id`=? LIMIT 1
     ]], accountId)
     if not row then
@@ -223,9 +258,11 @@ function EconomyAccounts.FindByOwner(ownerType, ownerId)
     local rows = DB.query([[
         SELECT a.`account_id`,a.`owner_type`,a.`owner_id`,a.`account_type`,a.`account_ref`,a.`currency_code`,
                a.`status`,a.`label`,a.`revision` AS `account_revision`,a.`created_at`,a.`closed_at`,
-               b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`
+               b.`posted_amount`,b.`revision` AS `balance_revision`,b.`updated_at`,o.`operator_resource`
         FROM `economy_accounts` a
         INNER JOIN `economy_balances` b ON b.`account_id`=a.`account_id`
+        LEFT JOIN `economy_treasury_operators` o
+               ON a.`owner_type`='organization' AND a.`account_type`='treasury' AND o.`organization_id`=a.`owner_id`
         WHERE a.`owner_type`=? AND a.`owner_id`=?
         ORDER BY a.`currency_code`,a.`account_type`,a.`account_ref`
         LIMIT ?

@@ -111,7 +111,7 @@ function EconomyAPI.ListAccountEntries(request, resource)
             return EconomyResults.Err('authorization_denied', 'Calling resource may not read this account history.')
         end
     end
-    return EconomyAccounts.ListEntries(request.accountId, request.limit, request.offset)
+    return EconomyAccounts.ListEntries(request.accountId, request.limit, request.offset, request.before)
 end
 
 -- A transaction is readable by the resource that posted it and by privileged

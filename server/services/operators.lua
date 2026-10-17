@@ -143,6 +143,8 @@ local function ValidReason(code)
     for _, prefix in ipairs(RESERVED_PREFIXES) do
         if code:sub(1, #prefix) == prefix then return false end
     end
+    -- The settlement reason belongs to the trusted settlers (journal.lua).
+    if type(Config.Settlement) == 'table' and code == Config.Settlement.reasonCode then return false end
     return true
 end
 

@@ -6,7 +6,7 @@ lua54 'yes'
 description 'Authoritative monetary accounting service for the Feather Framework'
 author 'Feather Framework'
 name 'feather-economy'
-version '0.3.0'
+version '0.4.0'
 
 shared_script 'shared/results.lua'
 
@@ -35,6 +35,8 @@ server_scripts {
     'server/treasury_tests.lua',
     'server/bank_tests.lua',
     'server/transaction_tests.lua',
+    'server/settlement_tests.lua',
+    'server/supply_tests.lua',
     'server/release_tests.lua'
 }
 

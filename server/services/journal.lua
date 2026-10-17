@@ -27,8 +27,33 @@ end
 -- Operated accounts: a movement under a reason code an operator registered is
 -- checked against that reason's shapes (server/services/operators.lua). Every
 -- other movement follows the v1 rules below.
+
+-- Settlement of a payable obligation (Config.Settlement). A trusted settler may
+-- move the obligation's amount from a character wallet into an organization
+-- treasury, and out of an organization treasury only for the resource that
+-- operates it (context.onBehalfOf), into a wallet, the system sink or another
+-- organization treasury.
+local function SettlementAllowed(from, to, request, resource, context, database)
+    local settlement, settlers = Config.Settlement, Config.Access.trustedSettlers
+    if type(settlement) ~= 'table' or type(settlers) ~= 'table' or settlers[resource or ''] ~= true
+        or request.reasonCode ~= settlement.reasonCode or request.referenceType ~= settlement.referenceType
+        or not IsUuid(request.referenceId) then
+        return false
+    end
+    local toTreasury = to.account_type == 'treasury' and to.owner_type == 'organization'
+    if from.account_type == 'treasury' and from.owner_type == 'organization' then
+        local operator = type(context) == 'table' and context.onBehalfOf or nil
+        return type(operator) == 'string' and EconomyOperators.OperatedBy(from, operator, database)
+            and (to.account_type == 'wallet' or to.account_type == 'system_sink' or toTreasury)
+    end
+    return from.account_type == 'wallet' and toTreasury
+end
+
 function EconomyJournal.AccountTypesAllowed(operation, from, to, request, resource, context, database)
     if EconomyOperators.Allowed(operation, from, to, request, resource, context, database) then
+        return true
+    end
+    if operation == 'transfer' and SettlementAllowed(from, to, request, resource, context, database) then
         return true
     end
     return operation == 'transfer' and from.account_type == 'wallet'
@@ -43,16 +68,28 @@ function EconomyJournal.AccountTypesAllowed(operation, from, to, request, resour
             and to.account_type == 'wallet'
 end
 
+-- Whether `resource` may post `operation` with `reasonCode`. Trusted suppliers
+-- issue and destroy with any reason. A resource listed in Config.IssueReasons
+-- may only issue, and only with its listed reasons (for example a stable buying
+-- a horse back); an operator issues with its registered supply reasons. Issue
+-- and Destroy also need the Core policy decision (EconomyAPI.Supply).
+function EconomyJournal.MayPost(operation, resource, reasonCode)
+    if type(resource) ~= 'string' then return false end
+    local trusted = operation == 'reversal' and Config.Access.trustedReversers
+        or operation == 'transfer' and Config.Access.trustedTransactors
+        or Config.Access.trustedSuppliers
+    if trusted[resource] then return true end
+    if operation ~= 'issue' then return false end
+    local listed = type(Config.IssueReasons) == 'table' and Config.IssueReasons[resource]
+    return (type(listed) == 'table' and listed[reasonCode or ''] == true)
+        or EconomyOperators.SupplyAllowed(resource, reasonCode)
+end
+
 local function Post(operation, request, context)
     request, context = type(request) == 'table' and request or {},
         type(context) == 'table' and context or {}
     local resource = context.resource
-    local trusted = operation == 'reversal' and Config.Access.trustedReversers
-        or operation == 'transfer' and Config.Access.trustedTransactors
-        or Config.Access.trustedSuppliers
-    local operatorSupply = operation == 'issue'
-        and EconomyOperators.SupplyAllowed(resource, request.reasonCode)
-    if type(resource) ~= 'string' or not (trusted[resource] or operatorSupply) then
+    if not EconomyJournal.MayPost(operation, resource, request.reasonCode) then
         return Failure('authorization_denied',
             'Calling resource is not authorized to transfer currency.')
     end
