@@ -8,7 +8,7 @@ never keep or change balances themselves.
 
 ## Status
 
-Version 0.3.0 (Contract 1). Status as of 2026-10-13.
+Current version: 0.5.0 (Contract 1). The live acceptance record below dates from 2026-10-13; scoped Stables refunds have offline coverage and await live acceptance.
 
 ### Passed
 
@@ -268,13 +268,14 @@ Rules:
 ## Payment reversals
 
 `ReversePayment({ transactionId = originalUuid }, context)` reverses the
-caller's own committed `shop.purchase` transfer referencing a `shop_order`. The
+caller's own committed payment within its configured reversal scope. Legacy
+`shop.purchase`/`shop_order` remains supported for existing callers. The
 original journal supplies the amount, currency and accounts (system sink or
 treasury back to the buyer's wallet). No amount, destination or key can be
 chosen: the deterministic key `reversal:<transaction>` allows one refund, also
 after restart. The original entries are checked under lock. Closed accounts,
 insufficient sink or treasury funds, and wallet limits fail without posting.
-The shop must first prove the delivery was cancelled; Economy does not infer
+The caller must first durably fence delivery as cancelled; Economy does not infer
 delivery status.
 
 ## Organization treasuries
@@ -384,3 +385,45 @@ to scan everything. Errors (exit code 1): SQL that writes an `economy_*` table,
 `removeMoney`, `exports.money`, ...). Direct reads of `economy_*` tables are
 warnings, errors with `--strict`. `--allow <resource>` skips a resource being
 retired. The expected result is `0 error(s) -> PASS`.
+
+### Scoped Stables payment reversals
+
+`GetCapabilities().value.features.scopedPaymentReversals == 1` advertises support.
+Config.Access.trustedReversers admits bcc-stables; Config.ReversiblePayments
+restricts its originals to stables.horse_purchase or stables.tack_purchase with
+referenceType stables_order and a UUID referenceId. Reversals use
+stables.payment_reversal. A caller with an explicit scope does not inherit shop
+scopes. Existing shop callers retain their current behavior.
+
+```lua
+local result = exports['feather-economy']:ReversePayment({
+    transactionId = savedPaymentTransactionId
+}, { actorCharacterId = originalBuyerCharacterId, correlationId = operationId })
+```
+
+The invoking resource determines authority; context.resource cannot impersonate
+another caller. No refund amount, currency, account or idempotency key is accepted.
+The original entries and configured scope are checked again under the SQL lock;
+the deterministic original-transaction key permits one refund. Closed accounts,
+insufficient receiving-account funds and wallet limits still refuse cleanly.
+This adds no escrow or treasury spending shape. Persist delivery cancellation
+before calling; an unknown outcome must retain the operation for reconciliation.
+
+Server-console `EconomyStablesReversalContractSmokeTest` checks 7 configuration/
+refusal conditions after startup without moving funds; DevMode is not required.
+It does not prove successful live refunds or concurrent/restart SQL recovery.
+Offline regressions (nine scenarios, including Shops, caller isolation, original
+scope/entry checks, replay and rollback) run with optional Lua 5.4/lupa:
+
+```text
+python tests/run_lua.py --lupa-dir <optional-lupa-directory>
+```
+
+Merge the new trustedReversers entry and ReversiblePayments block into deployed
+configuration, preserving custom settings. Deploy config.lua, server/main.lua,
+server/services/foundation.lua and server/services/journal.lua together. Existing
+manifest/scripts only: no refresh required for this change. Restart Economy and
+its consumers in dependency order, or use one server restart with the Inventory
+update. No new Economy migration. Preserve reversal scopes while unsettled
+operations exist; changing/removing a scope can block recovery, not authorize a
+second refund. No live financial acceptance is claimed by the offline tests.

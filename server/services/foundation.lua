@@ -60,6 +60,25 @@ local function ValidateConfig()
         return EconomyResults.Err('invalid_config', 'Config.Limits is invalid.')
     end
     local access = Config.Access
+    if Config.ReversiblePayments ~= nil then
+        if type(Config.ReversiblePayments) ~= 'table' then
+            return EconomyResults.Err('invalid_config', 'ReversiblePayments must be a table.')
+        end
+        for resource, scopes in pairs(Config.ReversiblePayments) do
+            if type(resource) ~= 'string' or resource == '' or type(scopes) ~= 'table' then
+                return EconomyResults.Err('invalid_config', 'Invalid reversal resource scope.')
+            end
+            for reason, scope in pairs(scopes) do
+                if type(reason) ~= 'string' or #reason > limits.maximumReasonLength or not reason:match('^[a-z][a-z0-9_]*%.[a-z0-9_.]+$')
+                    or type(scope) ~= 'table' or type(scope.referenceType) ~= 'string'
+                    or #scope.referenceType < 1 or #scope.referenceType > 48
+                    or type(scope.reversalReason) ~= 'string' or #scope.reversalReason > limits.maximumReasonLength
+                    or not scope.reversalReason:match('^[a-z][a-z0-9_]*%.[a-z0-9_.]+$') then
+                    return EconomyResults.Err('invalid_config', 'Invalid reversible payment reason/reference.')
+                end
+            end
+        end
+    end
     if type(access) ~= 'table' or type(access.trustedReaders) ~= 'table'
         or type(access.trustedTreasuryProvisioners) ~= 'table'
         or type(access.trustedProvisioners) ~= 'table'
@@ -208,6 +227,7 @@ function EconomyFoundation.GetCapabilities()
             operatedTreasuries = 1,
             accountHistory = 1,
             transactionRead = 1,
+            scopedPaymentReversals = 1,
             transfers = 1,
             journal = 1,
             idempotency = 1,

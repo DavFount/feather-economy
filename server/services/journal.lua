@@ -24,6 +24,21 @@ local function Failure(code, message, details)
     return EconomyResults.Err(code, message, details)
 end
 
+local function ReversalReason(original, resource)
+    if not original or original.source_resource ~= resource
+        or original.operation_type ~= 'transfer' or original.status ~= 'committed' then return nil end
+    local scopes
+    if type(Config.ReversiblePayments) == 'table' then scopes = Config.ReversiblePayments[resource] end
+    local scope = type(scopes) == 'table' and scopes[original.reason_code]
+    if type(scope) == 'table' and original.reference_type == scope.referenceType
+        and IsUuid(original.reference_id) and Text(scope.reversalReason, Config.Limits.maximumReasonLength) then
+        return scope.reversalReason
+    end
+    if scopes == nil and original.reason_code == 'shop.purchase' and original.reference_type == 'shop_order' then
+        return 'shop.payment_reversal'
+    end
+end
+
 -- Operated accounts: a movement under a reason code an operator registered is
 -- checked against that reason's shapes (server/services/operators.lua). Every
 -- other movement follows the v1 rules below.
@@ -123,10 +138,8 @@ local function Post(operation, request, context)
                 local originals = query([[SELECT * FROM `economy_transactions`
                     WHERE `transaction_id`=? FOR UPDATE]], referenceId) or {}
                 local original = originals[1]
-                if not original or original.source_resource ~= resource
-                    or original.operation_type ~= 'transfer' or original.status ~= 'committed'
-                    or original.reason_code ~= 'shop.purchase' or original.reference_type ~= 'shop_order' then
-                    return Failure('reversal_not_allowed', 'Only this caller\'s committed shop payment can be reversed.')
+                if ReversalReason(original, resource) ~= reasonCode then
+                    return Failure('reversal_not_allowed', 'Only this caller\'s configured committed payment can be reversed.')
                 end
                 local entries = query([[SELECT `account_id`,`amount` FROM `economy_entries`
                     WHERE `transaction_id`=?]], referenceId) or {}
@@ -277,10 +290,9 @@ function EconomyJournal.ReversePayment(request, context)
     end
     local original = DB.one([[SELECT * FROM `economy_transactions`
         WHERE `transaction_id`=?]], request.transactionId)
-    if not original or original.source_resource ~= context.resource
-        or original.operation_type ~= 'transfer' or original.status ~= 'committed'
-        or original.reason_code ~= 'shop.purchase' or original.reference_type ~= 'shop_order' then
-        return Failure('reversal_not_allowed', 'Only this caller\'s committed shop payment can be reversed.')
+    local reversalReason = ReversalReason(original, context.resource)
+    if not reversalReason then
+        return Failure('reversal_not_allowed', 'Only this caller\'s configured committed payment can be reversed.')
     end
     local decoded, value = pcall(json.decode, original.result_json or '')
     if not decoded or type(value) ~= 'table' then
@@ -291,7 +303,7 @@ function EconomyJournal.ReversePayment(request, context)
     return Post('reversal', {
         fromAccountId = value.toAccountId, toAccountId = value.fromAccountId,
         amount = value.amount, currency = value.currency,
-        reasonCode = 'shop.payment_reversal', referenceType = 'economy_transaction',
+        reasonCode = reversalReason, referenceType = 'economy_transaction',
         referenceId = original.transaction_id,
         idempotencyKey = 'reversal:' .. original.transaction_id
     }, context)

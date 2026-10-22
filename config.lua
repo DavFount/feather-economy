@@ -91,6 +91,7 @@ Config = {
         trustedReversers = {
             ['feather-economy'] = true,
             ['feather-shops'] = true,
+            ['bcc-stables'] = true,
         },
         -- Issue and Destroy; each also needs the Core policy grant (Authorization).
         -- bcc-stables is not listed: its horse sales issue currency and are refused
@@ -98,6 +99,14 @@ Config = {
         trustedSuppliers = {
             ['feather-economy'] = true,
             ['feather-admin'] = true,
+        },
+    },
+    -- Additional original-payment scopes; caller ownership is always required.
+    -- Existing shop.purchase/shop_order reversal behavior remains supported.
+    ReversiblePayments = {
+        ['bcc-stables'] = {
+            ['stables.horse_purchase'] = { referenceType = 'stables_order', reversalReason = 'stables.payment_reversal' },
+            ['stables.tack_purchase'] = { referenceType = 'stables_order', reversalReason = 'stables.payment_reversal' },
         },
     },
     -- Reason codes a resource may create currency into a character wallet with

@@ -505,3 +505,31 @@ if Config.DevMode then
             insufficient, tostring(conserved), tostring(restored)))
     end, true)
 end
+
+RegisterCommand('EconomyStablesReversalContractSmokeTest', function(source)
+    if source ~= 0 then return end
+    if EconomyFoundation.GetHealth().state ~= 'ready' then
+        print('[EconomyStablesReversalContractSmokeTest] not ready; wait for Economy startup.')
+        return
+    end
+    local uuid = '00000000-0000-4000-8000-000000000001'
+    local untrusted = EconomyAPI.ReversePayment({ transactionId = uuid }, {}, 'untrusted-test')
+    local tampered = EconomyAPI.ReversePayment({ transactionId = uuid, amount = 1 }, {}, 'bcc-stables')
+    local missing = EconomyAPI.ReversePayment({ transactionId = uuid }, {}, 'bcc-stables')
+    local scopes = Config.ReversiblePayments and Config.ReversiblePayments['bcc-stables'] or {}
+    local tests = {
+        { 'Stables reverser admitted', Config.Access.trustedReversers['bcc-stables'] == true },
+        { 'horse scope configured', scopes['stables.horse_purchase'] and scopes['stables.horse_purchase'].referenceType == 'stables_order' },
+        { 'tack scope configured', scopes['stables.tack_purchase'] and scopes['stables.tack_purchase'].referenceType == 'stables_order' },
+        { 'capability advertised', EconomyAPI.GetCapabilities().value.features.scopedPaymentReversals == 1 },
+        { 'untrusted caller refused', not untrusted.ok and untrusted.code == 'authorization_denied' },
+        { 'amount tampering refused', not tampered.ok and tampered.code == 'invalid_input' },
+        { 'missing original refused', not missing.ok and missing.code == 'reversal_not_allowed' },
+    }
+    local passed = 0
+    for _, test in ipairs(tests) do
+        if test[2] then passed = passed + 1 end
+        print(('[EconomyStablesReversalContractSmokeTest] %s %s'):format(test[1], test[2] and 'PASS' or 'FAIL'))
+    end
+    print(('[EconomyStablesReversalContractSmokeTest] %d/%d; no funds moved'):format(passed, #tests))
+end, true)
