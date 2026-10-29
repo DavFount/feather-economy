@@ -261,9 +261,7 @@ end
 -- Config.Authorization.enabled is true. No provider, a denial, an invalid
 -- decision, or an error raised by the call all deny. `authorize` defaults to
 -- Core; EconomyReleaseGateSmokeTest passes stand-ins for each failure mode.
-function EconomyAPI.Supply(operation, request, context, resource, authorize)
-    context = type(context) == 'table' and context or {}
-    context.resource = resource
+local function SupplyAuthorization(operation,request,context,resource,authorize)
     if Config.Authorization.enabled == true then
         local action = operation == 'issue' and Config.Authorization.issueAction
             or Config.Authorization.destroyAction
@@ -292,9 +290,31 @@ function EconomyAPI.Supply(operation, request, context, resource, authorize)
                 })
         end
     end
-    return operation == 'issue' and EconomyJournal.Issue(request, context)
-        or EconomyJournal.Destroy(request, context)
+    return EconomyResults.Ok(true)
 end
+function EconomyAPI.Supply(operation,request,context,resource,authorize)
+    context=type(context)=='table' and context or {};context.resource=resource
+    local allowed=SupplyAuthorization(operation,request,context,resource,authorize)
+    if not allowed.ok then return allowed end
+    return operation=='issue' and EconomyJournal.Issue(request,context) or EconomyJournal.Destroy(request,context)
+end
+-- Same policy and account checks as a payout, with no currency/receipt writes.
+function EconomyAPI.CheckIssue(request,context,resource,authorize)
+    context=type(context)=='table' and context or {};context.resource=resource
+    if type(request)~='table' or not EconomyJournal.MayPost('issue',resource,request.reasonCode)
+        or type(request.amount)~='number' or request.amount<1 or request.amount%1~=0
+        or request.amount>Config.Limits.maximumTransferAmount then return EconomyResults.Err('authorization_denied','Issue scope is unavailable.') end
+    local allowed=SupplyAuthorization('issue',request,context,resource,authorize)
+    if not allowed.ok then return allowed end
+    local account=EconomyAPI.GetAccount({accountId=request.accountId},resource)
+    if not account.ok or account.value.accountType~='wallet' or account.value.status~='open'
+        or account.value.currency~=request.currency or account.value.ownerType~='character'
+        or account.value.ownerId~=context.actorCharacterId then return EconomyResults.Err('account_unavailable','Payout wallet is unavailable.') end
+    local source=EconomyAPI.GetSystemAccount({currency=request.currency,accountType='system_source'},resource)
+    if not source.ok or source.value.status~='open' then return EconomyResults.Err('account_unavailable','System payout account is unavailable.') end
+    return EconomyResults.Ok({allowed=true,sourceAccountId=source.value.accountId})
+end
+exports('CheckIssue',function(request,context) return EconomyAPI.CheckIssue(request,context,GetInvokingResource()) end)
 
 function EconomyAPI.Issue(request, context, resource)
     return EconomyAPI.Supply('issue', request, context, resource)

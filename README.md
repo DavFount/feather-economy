@@ -8,7 +8,7 @@ never keep or change balances themselves.
 
 ## Status
 
-Current version: 0.5.0 (Contract 1). The live acceptance record below dates from 2026-10-13; scoped Stables refunds have offline coverage and await live acceptance.
+Current version: 0.5.1 (Contract 1). The live acceptance record below dates from 2026-10-13; scoped Stables refunds have offline coverage and await live acceptance.
 
 ### Passed
 
@@ -427,3 +427,22 @@ its consumers in dependency order, or use one server restart with the Inventory
 update. No new Economy migration. Preserve reversal scopes while unsettled
 operations exist; changing/removing a scope can block recovery, not authorize a
 second refund. No live financial acceptance is claimed by the offline tests.
+## Read-only payout preflight
+
+`CheckIssue(request, context)` uses the actual invoking resource, configured Issue
+reason and the same Core supply authorization as Issue, then verifies the character
+wallet and open system source. Success returns `{allowed=true,sourceAccountId}`;
+it posts no journal, receipt or balance changes. Recheck at gameplay confirmation;
+actual Issue still authorizes and journals independently, so later failure remains
+a durable consumer obligation rather than permission to recreate surrendered goods.
+Stables buy-back uses the exact `stables.tack_sale` reason and a server-only Core
+service grant for Economy's Stables principal. No unrestricted supplier trust is
+required. Original Issue/Destroy behavior and authorization are retained.
+
+Stables player tack trades add exact scopes `stables.tack_trade_payment` /
+`stables_tack_trade` -> `stables.tack_trade_refund`, and Issue reason
+`stables.tack_trade_sale`. Existing Core supply authorization remains mandatory;
+no unrestricted supplier grant or new money API. Stables skips Economy for free
+handovers. Paid trades capture buyer payment before custody and settle seller
+credit after Inventory's transfer receipt; only certain failed custody refunds.
+10 reversal regression scenarios plus issue preflight pass; live trades pending.

@@ -18,3 +18,7 @@ for path in files:
 print(f'PASS Lua 5.4 syntax ({len(files)} files)', flush=True)
 lua.globals().arg = lua.table_from({1: root.as_posix()})
 lua.execute((root / 'tests/reversal_spec.lua').read_text(encoding='utf-8'))
+
+preflight = LuaRuntime(unpack_returned_tuples=True)
+preflight.globals().arg = preflight.table_from({1: root.as_posix()})
+preflight.execute((root / 'tests/issue_preflight_spec.lua').read_text(encoding='utf-8'))

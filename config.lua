@@ -94,8 +94,8 @@ Config = {
             ['bcc-stables'] = true,
         },
         -- Issue and Destroy; each also needs the Core policy grant (Authorization).
-        -- bcc-stables is not listed: its horse sales issue currency and are refused
-        -- until it is added here and granted economy.currency.issue.
+        -- Stables uses the exact scoped IssueReasons below plus the Core service grant;
+        -- do not add it here as an unrestricted currency supplier.
         trustedSuppliers = {
             ['feather-economy'] = true,
             ['feather-admin'] = true,
@@ -105,8 +105,18 @@ Config = {
     -- Existing shop.purchase/shop_order reversal behavior remains supported.
     ReversiblePayments = {
         ['bcc-stables'] = {
-            ['stables.horse_purchase'] = { referenceType = 'stables_order', reversalReason = 'stables.payment_reversal' },
-            ['stables.tack_purchase'] = { referenceType = 'stables_order', reversalReason = 'stables.payment_reversal' },
+            ['stables.horse_purchase'] = {
+                referenceType = 'stables_order',
+                reversalReason = 'stables.payment_reversal'
+            },
+            ['stables.tack_purchase'] = {
+                referenceType = 'stables_order',
+                reversalReason = 'stables.payment_reversal'
+            },
+            ['stables.tack_trade_payment'] = {
+                referenceType = 'stables_tack_trade',
+                reversalReason = 'stables.tack_trade_refund'
+            },
         },
     },
     -- Reason codes a resource may create currency into a character wallet with
@@ -120,6 +130,8 @@ Config = {
             ['housing.furniture_sold'] = true    -- furniture sold back
         },
         ['bcc-stables'] = {
+            ['stables.tack_trade_sale'] = true,  -- Settles an accepted player tack trade
+            ['stables.tack_sale'] = true,        -- stable tack buy-back only
             ['stables.horse_sale'] = true,       -- the stable buys a horse
             ['stables.tamed_sale'] = true        -- a trainer buys a tamed horse
         },
